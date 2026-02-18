@@ -155,19 +155,19 @@ class MainActivity : AppCompatActivity() {
             CHECK_COLOR 200 2055 #e2933f 10 THEN Qiang ELSE Wait
 
             LABEL Qiang
-            adb shell input tap 400 2055
+            TAP 400 2055
             SLEEP 0.3
-            adb shell input tap 543 1534
+            TAP 543 1534
             JUMP Next
 
             LABEL Wait
-            adb shell input swipe 500 1800 500 600 300
+            SWIPE 500 1800 500 600 300
             SLEEP 0.3
             JUMP Check
 
             LABEL Next
             SLEEP 15
-            adb shell input keyevent KEYCODE_BACK
+            BACK
             JUMP Check
         """.trimIndent()
     }

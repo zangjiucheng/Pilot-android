@@ -1,19 +1,20 @@
 # AdbFlow Android App
 
-This folder contains a native Android replacement for your Python ADB runner.
+This folder contains an on-device Android automation app (no computer/ADB required at runtime).
 
 ## What it does
 - Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `EXIT`.
-- Supports your existing ADB-style lines for input actions:
-  - `adb shell input tap x y`
-  - `adb shell input swipe x1 y1 x2 y2 [duration]`
-  - `adb shell input keyevent KEYCODE_BACK|KEYCODE_HOME|KEYCODE_SLEEP`
+- Native action commands:
+  - `TAP x y`
+  - `SWIPE x1 y1 x2 y2 [durationMs]`
+  - `BACK`, `HOME`, `LOCK`
+- Legacy `adb shell input ...` lines are auto-converted for compatibility.
 - Performs pixel color checks using `AccessibilityService.takeScreenshot` (Android 11+).
 
-## Important differences vs Python+ADB
-- This runs **on-device**, not from your computer.
+## Runtime model
+- Runs fully **on-device** after install.
+- No USB debugging or computer connection is needed to execute scripts.
 - You must enable the app's Accessibility Service manually.
-- `adb devices` is ignored (not needed on-device).
 - Works best for gesture/back/home/lock automation.
 
 ## Build
