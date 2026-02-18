@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AdbFlow</string>
+    <string name="accessibility_service_description">Runs command scripts with gestures and pixel checks.</string>
+</resources>
