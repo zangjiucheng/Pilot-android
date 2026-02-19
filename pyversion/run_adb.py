@@ -11,7 +11,18 @@ try:
 except ImportError:  # Pillow is optional unless color checks are used
     Image = None  # type: ignore[assignment]
 
-SCREENSHOT_PATH = Path("../tmp/adb_screen.png")
+from ocr import (
+    DEFAULT_OCR_LANG,
+    OCR_CROP_PATH,
+    normalize_ocr_lang,
+    preload_ocr_models,
+    read_text_in_region,
+    text_contains,
+)
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+TMP_DIR = SCRIPT_DIR.parent / "tmp"
+SCREENSHOT_PATH = TMP_DIR / "adb_screen.png"
 
 
 @dataclass
@@ -49,6 +60,7 @@ class CommandExecutionError(RuntimeError):
 
 def capture_screenshot(destination: Path = SCREENSHOT_PATH) -> Path:
     """Capture a screenshot from the connected Android device."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as target:
         subprocess.run(
             ["adb", "exec-out", "screencap", "-p"],
@@ -232,6 +244,76 @@ def check_color(command: str) -> Optional[JumpDirective]:
     return branch_target_to_directive(on_mismatch)
 
 
+def check_ocr(command: str) -> Optional[JumpDirective]:
+    tokens = shlex.split(command)
+    if len(tokens) < 6:
+        print(
+            "!! CHECK_OCR usage: CHECK_OCR <x1> <y1> <x2> <y2> <text> "
+            "[LANG <language>] "
+            "[THEN [CALL|GOTO] <label>] [ELSE [CALL|GOTO] <label>]"
+        )
+        return None
+
+    _, x1_str, y1_str, x2_str, y2_str, *rest = tokens
+    try:
+        x1 = int(x1_str)
+        y1 = int(y1_str)
+        x2 = int(x2_str)
+        y2 = int(y2_str)
+    except ValueError as exc:
+        print(f"!! Invalid CHECK_OCR coordinates: {exc}")
+        return None
+
+    if not rest:
+        print("!! CHECK_OCR missing text argument")
+        return None
+
+    expected_text = rest[0]
+    remainder = rest[1:]
+    ocr_lang = DEFAULT_OCR_LANG
+
+    if len(remainder) >= 2 and remainder[0].upper() == "LANG":
+        ocr_lang = normalize_ocr_lang(remainder[1])
+        remainder = remainder[2:]
+
+    branch_tokens = remainder
+    try:
+        on_match, on_mismatch = parse_branch_tokens(branch_tokens)
+    except ValueError as exc:
+        print(f"!! Invalid CHECK_OCR branching syntax: {exc}")
+        return None
+
+    print(
+        f"> Checking OCR region ({x1}, {y1}, {x2}, {y2}) contains "
+        f"{expected_text!r} using lang={ocr_lang!r}"
+    )
+    try:
+        screenshot = capture_screenshot()
+        actual_text = read_text_in_region(
+            screenshot,
+            x1,
+            y1,
+            x2,
+            y2,
+            ocr_lang=ocr_lang,
+            crop_output_path=OCR_CROP_PATH,
+        )
+    except Exception as exc:
+        print(f"!! Failed to capture screenshot or run OCR: {exc}")
+        return branch_target_to_directive(on_mismatch)
+
+    matches = text_contains(actual_text, expected_text)
+    if matches:
+        print(f"✓ OCR match found. Text={actual_text!r}")
+        return branch_target_to_directive(on_match)
+
+    print(
+        "!! OCR text not found. "
+        f"Expected substring={expected_text!r}, OCR={actual_text!r}"
+    )
+    return branch_target_to_directive(on_mismatch)
+
+
 def is_within_bounds(index: int, bounds: LabelBounds) -> bool:
     return bounds.start <= index < bounds.end
 
@@ -331,6 +413,8 @@ def run(cmd: str) -> Optional[JumpDirective]:
         return None
     if normalized.startswith("CHECK_COLOR"):
         return check_color(cmd)
+    if normalized.startswith("CHECK_OCR"):
+        return check_ocr(cmd)
 
     print(f"> Running: {cmd}")
     try:
@@ -371,6 +455,35 @@ def build_label_map(lines: List[str]) -> Tuple[Dict[str, int], Dict[str, LabelBo
     return labels, bounds
 
 
+def collect_ocr_langs(lines: List[str]) -> List[str]:
+    langs: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not stripped.upper().startswith("CHECK_OCR"):
+            continue
+
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            # Keep runtime behavior for malformed command lines.
+            continue
+
+        if len(tokens) < 6:
+            continue
+
+        lang = DEFAULT_OCR_LANG
+        remainder = tokens[6:]
+        if len(remainder) >= 2 and remainder[0].upper() == "LANG":
+            lang = normalize_ocr_lang(remainder[1])
+        langs.append(lang)
+
+    if not langs:
+        return [DEFAULT_OCR_LANG]
+    return langs
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run ADB automation commands from a file.")
     parser.add_argument(
@@ -389,6 +502,14 @@ def main() -> None:
     print(f"> Using commands file: {commands_path}")
     with commands_path.open("r", encoding="utf-8") as command_file:
         lines = command_file.readlines()
+
+    ocr_langs = collect_ocr_langs(lines)
+    print(f"> Preloading OCR models for languages: {', '.join(ocr_langs)}")
+    try:
+        preload_ocr_models(ocr_langs)
+    except Exception as exc:
+        print(f"!! Failed to preload OCR models: {exc}")
+        raise SystemExit(2) from exc
 
     labels, label_bounds = build_label_map(lines)
     line_index = 0
