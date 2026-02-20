@@ -1,13 +1,16 @@
 package com.example.adbflow.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.os.Build
 import android.view.Display
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.example.adbflow.engine.CommandEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,12 +61,27 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        val isEmergencyStopKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+        if (event.action == KeyEvent.ACTION_DOWN && isEmergencyStopKey) {
+            val keyName = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) "Volume Up" else "Volume Down"
+            appendLog("> Emergency stop requested ($keyName)")
+            stopScript()
+            return true
+        }
+        return super.onKeyEvent(event)
+    }
+
     override fun onInterrupt() {
         appendLog("!! Accessibility interrupted")
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        val info = serviceInfo
+        info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+        serviceInfo = info
         instance = this
         appendLog("> Accessibility service connected")
     }
@@ -85,9 +103,12 @@ class AutomationAccessibilityService : AccessibilityService() {
             )
             try {
                 engine.runScript(script)
+            } catch (_: CancellationException) {
+                appendLog("> Script cancelled")
             } catch (e: Exception) {
                 appendLog("!! Automation halted: ${e.message}")
             } finally {
+                scriptJob = null
                 appendLog("> Script finished")
             }
         }

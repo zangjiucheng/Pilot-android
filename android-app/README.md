@@ -1,4 +1,4 @@
-# AdbFlow Android App
+# FlowPilot Android App
 
 This folder contains an on-device Android automation app (no computer/ADB required at runtime).
 
@@ -17,16 +17,50 @@ This folder contains an on-device Android automation app (no computer/ADB requir
 - You must enable the app's Accessibility Service manually.
 - Works best for gesture/back/home/lock automation.
 
-## Build
-1. Open `android-app` in Android Studio.
-2. Let Gradle sync.
-3. Build and install to device.
+## Build (Command Line, no Android Studio)
+From the repo root:
+
+```bash
+cd android-app
+./gradlew assembleDebug
+```
+
+APK output:
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install to a connected phone:
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+If build fails with `SDK location not found`, configure Android SDK first:
+
+1. Install Android SDK command-line tools and platform packages.
+2. Set one of:
+   - `ANDROID_HOME` / `ANDROID_SDK_ROOT`, or
+   - `android-app/local.properties` with:
+
+```properties
+sdk.dir=/path/to/Android/sdk
+```
 
 ## Run
 1. Open the app.
-2. Tap **Enable Accessibility Service** and enable `AdbFlow`.
+2. Tap **Enable Accessibility Service** and enable `FlowPilot`.
 3. Paste/edit your script.
 4. Tap **Run**.
+
+Useful command-line checks:
+
+```bash
+adb devices
+adb shell pm list packages | rg flowpilot
+adb shell am start -n com.example.adbflow/.ui.MainActivity
+```
 
 ## Compatibility
 - `minSdk = 30` (Android 11), because `CHECK_COLOR` depends on screenshot APIs available from Android 11.

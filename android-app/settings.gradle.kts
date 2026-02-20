@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AdbFlow"
+rootProject.name = "FlowPilot"
 include(":app")
