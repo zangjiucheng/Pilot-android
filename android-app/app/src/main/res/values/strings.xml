@@ -1,9 +1,10 @@
 <resources>
     <string name="app_name">FlowPilot</string>
     <string name="accessibility_service_description">Runs command scripts with gestures and pixel checks.</string>
-    <string name="emergency_stop_hint">Emergency stop: press Volume Up or Volume Down while script is running.</string>
-    <string name="genshin_background_hint">Genshin-style background is picked when the screen opens.</string>
+    <string name="emergency_stop_hint">Emergency: Volume Up stops script; Volume Down kills FlowPilot app.</string>
     <string name="pointer_location_hint">Tip: Settings > Developer options > Input > Pointer location (turn on).</string>
+    <string name="countdown_label">Delay before run (seconds). Shows global overlay countdown.</string>
+    <string name="countdown_hint">0</string>
     <string name="background_content_description">Decorative background</string>
     <string name="script_preview_hint">Tap here to edit script in popup editor</string>
     <string name="script_editor_title">Edit Script</string>

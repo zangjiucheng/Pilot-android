@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -32,10 +34,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logView: TextView
     private lateinit var filePathView: TextView
     private lateinit var backgroundView: ImageView
+    private lateinit var countdownSecondsInput: EditText
     private var currentFileUri: Uri? = null
     private var lastBackgroundRes: Int? = null
     private var lastBackgroundAssetPath: String? = null
     private var assetBackgroundCandidates: List<String> = emptyList()
+    private var scriptTouchDownX = 0f
+    private var scriptTouchDownY = 0f
+    private var scriptDragged = false
     private val backgroundCandidates = listOf(
         R.drawable.genshin_bg_anemo,
         R.drawable.genshin_bg_cryo,
@@ -74,6 +80,7 @@ class MainActivity : AppCompatActivity() {
         logView = findViewById(R.id.logView)
         filePathView = findViewById(R.id.filePathView)
         backgroundView = findViewById(R.id.backgroundImageView)
+        countdownSecondsInput = findViewById(R.id.countdownSecondsInput)
         assetBackgroundCandidates = listAssetBackgrounds()
 
         val enableService = findViewById<Button>(R.id.enableServiceButton)
@@ -83,12 +90,35 @@ class MainActivity : AppCompatActivity() {
         val runButton = findViewById<Button>(R.id.runButton)
         val stopButton = findViewById<Button>(R.id.stopButton)
         val clearLogsButton = findViewById<Button>(R.id.clearLogsButton)
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
 
         commandEditor.isFocusable = false
         commandEditor.isFocusableInTouchMode = false
         commandEditor.isCursorVisible = false
+        commandEditor.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    scriptTouchDownX = event.x
+                    scriptTouchDownY = event.y
+                    scriptDragged = false
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (!scriptDragged) {
+                        val dx = kotlin.math.abs(event.x - scriptTouchDownX)
+                        val dy = kotlin.math.abs(event.y - scriptTouchDownY)
+                        if (dx > touchSlop || dy > touchSlop) {
+                            scriptDragged = true
+                        }
+                    }
+                }
+            }
+            false
+        }
         commandEditor.setOnClickListener {
-            showScriptEditorDialog()
+            if (!scriptDragged) {
+                showScriptEditorDialog()
+            }
         }
 
         commandEditor.setText(defaultScript())
@@ -116,7 +146,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         runButton.setOnClickListener {
-            AutomationAccessibilityService.startScript(commandEditor.text.toString())
+            val delaySeconds = countdownSecondsInput.text.toString().trim()
+                .ifEmpty { "0" }
+                .toIntOrNull()
+            if (delaySeconds == null || delaySeconds < 0) {
+                toast("Countdown must be a number >= 0")
+                return@setOnClickListener
+            }
+            AutomationAccessibilityService.startScript(commandEditor.text.toString(), delaySeconds)
         }
 
         stopButton.setOnClickListener {
@@ -293,7 +330,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun defaultScript(): String {
         return """
-            # Example
+            # Example:
             LABEL Check
             CHECK_COLOR 200 2055 #e2933f 10 THEN Qiang ELSE Wait
 

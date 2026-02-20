@@ -9,7 +9,7 @@ This folder contains an on-device Android automation app (no computer/ADB requir
   - `SWIPE x1 y1 x2 y2 [durationMs]`
   - `BACK`, `HOME`, `LOCK`
 - Legacy `adb shell input ...` lines are auto-converted for compatibility.
-- Performs pixel color checks using `AccessibilityService.takeScreenshot` (Android 11+).
+- `CHECK_COLOR` is supported only on rooted devices.
 
 ## Runtime model
 - Runs fully **on-device** after install.
@@ -63,4 +63,4 @@ adb shell am start -n com.example.adbflow/.ui.MainActivity
 ```
 
 ## Compatibility
-- `minSdk = 30` (Android 11), because `CHECK_COLOR` depends on screenshot APIs available from Android 11.
+- `minSdk = 30` (Android 11).

@@ -4,28 +4,38 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.Path
 import android.os.Build
-import android.view.Display
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.KeyEvent
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.TextView
 import com.example.adbflow.engine.CommandEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class AutomationAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scriptJob: Job? = null
+    private var countdownOverlayView: TextView? = null
 
     companion object {
         @Volatile
@@ -44,31 +54,51 @@ class AutomationAccessibilityService : AccessibilityService() {
             mutableLogs.value = emptyList()
         }
 
-        fun startScript(script: String) {
+        fun startScript(script: String, countdownSeconds: Int = 0) {
             val service = instance
             if (service == null) {
                 appendLog("!! Accessibility service is not connected.")
                 return
             }
-            service.runScriptInternal(script)
+
+            if (containsCheckColor(script) && !service.hasRootAccess()) {
+                appendLog("!! CHECK_COLOR requires root. Script rejected.")
+                return
+            }
+            service.runScriptInternal(script, countdownSeconds.coerceAtLeast(0))
         }
 
         fun stopScript() {
+            instance?.removeCountdownOverlayNow()
             instance?.scriptJob?.cancel()
             appendLog("> Script stopped")
+        }
+
+        private fun containsCheckColor(script: String): Boolean {
+            return script.lineSequence().any { line ->
+                val trimmed = line.trim()
+                trimmed.isNotEmpty() &&
+                    !trimmed.startsWith("#") &&
+                    trimmed.uppercase(Locale.US).startsWith("CHECK_COLOR")
+            }
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        val isEmergencyStopKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
-            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
-        if (event.action == KeyEvent.ACTION_DOWN && isEmergencyStopKey) {
-            val keyName = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) "Volume Up" else "Volume Down"
-            appendLog("> Emergency stop requested ($keyName)")
-            stopScript()
-            return true
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                stopScript()
+                return false
+            }
+            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                appendLog("!! Hard stop requested (Volume Down). Killing app process.")
+                stopScript()
+                stopSelf()
+                android.os.Process.killProcess(android.os.Process.myPid())
+                return true
+            }
         }
         return super.onKeyEvent(event)
     }
@@ -93,9 +123,13 @@ class AutomationAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    private fun runScriptInternal(script: String) {
+    private fun runScriptInternal(script: String, countdownSeconds: Int) {
         scriptJob?.cancel()
         scriptJob = scope.launch {
+            if (countdownSeconds > 0) {
+                appendLog("> Starting in $countdownSeconds seconds")
+                showGlobalCountdown(countdownSeconds)
+            }
             appendLog("> Script started")
             val engine = CommandEngine(
                 service = this@AutomationAccessibilityService,
@@ -111,6 +145,71 @@ class AutomationAccessibilityService : AccessibilityService() {
                 scriptJob = null
                 appendLog("> Script finished")
             }
+        }
+    }
+
+    private suspend fun showGlobalCountdown(seconds: Int) {
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val countdownView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#AA000000"))
+            setPadding(32, 18, 32, 18)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            gravity = Gravity.CENTER
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = 140
+        }
+
+        withContext(Dispatchers.Main) {
+            windowManager.addView(countdownView, params)
+            countdownOverlayView = countdownView
+        }
+        try {
+            for (remaining in seconds downTo 1) {
+                withContext(Dispatchers.Main) {
+                    countdownView.text = "Starting in $remaining..."
+                }
+                delay(1000)
+            }
+        } finally {
+            removeCountdownOverlayNow()
+        }
+    }
+
+    private fun removeCountdownOverlayNow() {
+        val view = countdownOverlayView ?: return
+        mainExecutor.execute {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            runCatching { wm.removeView(view) }
+            countdownOverlayView = null
+        }
+    }
+
+    fun hasRootAccess(): Boolean {
+        var process: java.lang.Process? = null
+        return try {
+            process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
+            if (!process.waitFor(800, TimeUnit.MILLISECONDS)) {
+                process.destroy()
+                false
+            } else {
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                process.exitValue() == 0 && output.contains("uid=0")
+            }
+        } catch (_: Exception) {
+            false
+        } finally {
+            process?.destroy()
         }
     }
 
@@ -258,18 +357,12 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     suspend fun readPixelColor(x: Int, y: Int, log: (String) -> Unit): Triple<Int, Int, Int>? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            log("!! CHECK_COLOR requires Android 11+")
+        if (!hasRootAccess()) {
+            log("!! CHECK_COLOR requires root")
             return null
         }
 
-        val bitmap = try {
-            captureScreenshot()
-        } catch (e: Exception) {
-            log("!! Failed to capture screenshot: ${e.message}")
-            return null
-        }
-
+        val bitmap = captureScreenshotViaRoot(log) ?: return null
         if (x < 0 || y < 0 || x >= bitmap.width || y >= bitmap.height) {
             log("!! coordinates ($x, $y) are outside screenshot bounds ${bitmap.width}x${bitmap.height}")
             return null
@@ -283,41 +376,39 @@ class AutomationAccessibilityService : AccessibilityService() {
         )
     }
 
-    private suspend fun captureScreenshot(): Bitmap {
-        return suspendCancellableCoroutine { continuation ->
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                mainExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: ScreenshotResult) {
-                        val hwBuffer = screenshot.hardwareBuffer
-                        val bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)
-                        hwBuffer.close()
-                        val copy = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                        if (copy == null) {
-                            if (continuation.isActive) {
-                                continuation.resumeWithException(IllegalStateException("Screenshot conversion failed"))
-                            }
-                            return
-                        }
-                        if (continuation.isActive) continuation.resume(copy)
-                    }
+    private fun captureScreenshotViaRoot(log: (String) -> Unit): Bitmap? {
+        var process: java.lang.Process? = null
+        return try {
+            process = Runtime.getRuntime().exec(arrayOf("su", "-c", "screencap -p"))
+            val pngBytes = process.inputStream.use { it.readBytes() }
+            val errorText = process.errorStream.bufferedReader().use { it.readText() }
 
-                    override fun onFailure(errorCode: Int) {
-                        if (continuation.isActive) {
-                            continuation.resumeWithException(IllegalStateException("Screenshot error code $errorCode"))
-                        }
-                    }
-                },
-            )
+            if (!process.waitFor(4, TimeUnit.SECONDS)) {
+                process.destroy()
+                log("!! Root screencap timed out")
+                return null
+            }
+
+            if (process.exitValue() != 0) {
+                log("!! Root screencap failed: ${errorText.ifBlank { "unknown error" }}")
+                return null
+            }
+
+            BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size)
+                ?: run {
+                    log("!! Failed to decode root screencap output")
+                    null
+                }
+        } catch (e: Exception) {
+            log("!! Root screencap error: ${e.message}")
+            null
+        } finally {
+            process?.destroy()
         }
     }
 
     fun sendHomeAndSleep(log: (String) -> Unit) {
         performGlobalAction(GLOBAL_ACTION_HOME)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
-        }
-        log("> Sent HOME and LOCK_SCREEN")
+        log("> Sent HOME")
     }
 }
