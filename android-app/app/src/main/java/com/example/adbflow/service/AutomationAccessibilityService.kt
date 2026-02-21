@@ -225,11 +225,11 @@ class AutomationAccessibilityService : AccessibilityService() {
                 showGlobalCountdown(countdownSeconds)
             }
             appendLog("> Script started")
-            val engine = CommandEngine(
-                service = this@AutomationAccessibilityService,
-                log = { appendLog(it) },
-            )
             try {
+                val engine = CommandEngine(
+                    service = this@AutomationAccessibilityService,
+                    log = { appendLog(it) },
+                )
                 engine.runScript(script)
             } catch (_: CancellationException) {
                 appendLog("> Script cancelled")

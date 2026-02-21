@@ -4,6 +4,10 @@ This folder contains an on-device Android automation app (no computer/ADB requir
 
 ## What it does
 - Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `CHECK_COLOR_LINE`, `CHECK_OCR`, `EXIT`.
+  - Control flow semantics:
+    - `CALL <label>` enters a subroutine and pushes return address.
+    - `RETURN` pops the call stack and returns to the caller.
+    - `GOTO <label>` and `JUMP <label>` are non-stack jumps for loops/branching.
   - `CHECK_COLOR_LINE` supports:
     - `CHECK_COLOR_LINE <x> <y1> <y2> <color> [tolerance] [step] [minRun] ...` (fixed x, scan y)
     - `CHECK_COLOR_LINE Y <y> <x1> <x2> <color> [tolerance] [step] [minRun] ...` (fixed y, scan x)

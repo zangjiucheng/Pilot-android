@@ -8,7 +8,6 @@ private data class JumpDirective(
     val label: String? = null,
     val isCall: Boolean = false,
     val isReturn: Boolean = false,
-    val autoReturn: Boolean = false,
     val shouldExit: Boolean = false,
 )
 
@@ -18,15 +17,8 @@ private data class BranchAction(
     val shouldExit: Boolean = false,
 )
 
-private data class LabelBounds(
-    val start: Int,
-    var end: Int,
-)
-
 private data class CallFrame(
     val returnIndex: Int,
-    val label: String,
-    val autoReturn: Boolean,
 )
 
 class CommandEngine(
@@ -40,8 +32,7 @@ class CommandEngine(
     suspend fun runScript(script: String) {
         val lines = script.lines()
         val labels = mutableMapOf<String, Int>()
-        val labelBounds = mutableMapOf<String, LabelBounds>()
-        buildLabelMap(lines, labels, labelBounds)
+        buildLabelMap(lines, labels)
 
         var lineIndex = 0
         val callStack = mutableListOf<CallFrame>()
@@ -53,18 +44,18 @@ class CommandEngine(
                 delay(300)
 
                 if (directive == null) {
-                    lineIndex = adjustForAutoReturn(lineIndex + 1, callStack, labelBounds)
+                    lineIndex += 1
                     continue
                 }
 
                 if (directive.isReturn) {
                     if (callStack.isEmpty()) {
                         log("!! RETURN called with an empty call stack")
-                        lineIndex = adjustForAutoReturn(lineIndex + 1, callStack, labelBounds)
+                        lineIndex += 1
                         continue
                     }
                     val frame = callStack.removeAt(callStack.lastIndex)
-                    lineIndex = adjustForAutoReturn(frame.returnIndex, callStack, labelBounds)
+                    lineIndex = frame.returnIndex
                     continue
                 }
 
@@ -75,30 +66,26 @@ class CommandEngine(
                 }
 
                 if (directive.label == null) {
-                    lineIndex = adjustForAutoReturn(lineIndex + 1, callStack, labelBounds)
+                    lineIndex += 1
                     continue
                 }
 
                 val target = labels[directive.label]
                 if (target == null) {
                     log("!! Unknown label '${directive.label}'")
-                    lineIndex = adjustForAutoReturn(lineIndex + 1, callStack, labelBounds)
+                    lineIndex += 1
                     continue
                 }
 
-                if (directive.isCall || directive.autoReturn) {
+                if (directive.isCall) {
                     callStack.add(
                         CallFrame(
                             returnIndex = currentIndex + 1,
-                            label = directive.label,
-                            autoReturn = directive.autoReturn,
                         )
                     )
-                } else {
-                    popAutoFrameIfLeaving(callStack, labelBounds, currentIndex, target)
                 }
 
-                lineIndex = adjustForAutoReturn(target, callStack, labelBounds)
+                lineIndex = target
             }
         } finally {
             service.sendHomeAndSleep(log)
@@ -108,9 +95,7 @@ class CommandEngine(
     private fun buildLabelMap(
         lines: List<String>,
         labels: MutableMap<String, Int>,
-        bounds: MutableMap<String, LabelBounds>,
     ) {
-        var currentLabel: String? = null
         for (index in lines.indices) {
             val stripped = lines[index].trim()
             if (!stripped.uppercase(Locale.US).startsWith("LABEL")) continue
@@ -125,11 +110,6 @@ class CommandEngine(
                 continue
             }
             labels[labelName] = index
-            bounds[labelName] = LabelBounds(start = index, end = lines.size)
-            if (currentLabel != null) {
-                bounds[currentLabel]?.end = index
-            }
-            currentLabel = labelName
         }
     }
 
@@ -155,7 +135,7 @@ class CommandEngine(
                 log("!! JUMP usage: JUMP <label>")
                 null
             } else {
-                JumpDirective(label = tokens[1], isCall = true, autoReturn = true)
+                JumpDirective(label = tokens[1])
             }
         }
         if (normalized.startsWith("CALL")) {
@@ -637,45 +617,4 @@ class CommandEngine(
         scriptVariables.remove("LAST_Y")
     }
 
-    private fun isWithinBounds(index: Int, bounds: LabelBounds): Boolean {
-        return index in bounds.start until bounds.end
-    }
-
-    private fun popAutoFrameIfLeaving(
-        callStack: MutableList<CallFrame>,
-        labelBounds: Map<String, LabelBounds>,
-        currentIndex: Int,
-        targetIndex: Int,
-    ) {
-        if (callStack.isEmpty()) return
-        val frame = callStack.last()
-        if (!frame.autoReturn) return
-        val bounds = labelBounds[frame.label] ?: run {
-            callStack.removeLastOrNull()
-            return
-        }
-
-        if (isWithinBounds(currentIndex, bounds) && !isWithinBounds(targetIndex, bounds)) {
-            callStack.removeLastOrNull()
-        }
-    }
-
-    private fun adjustForAutoReturn(
-        lineIndex: Int,
-        callStack: MutableList<CallFrame>,
-        labelBounds: Map<String, LabelBounds>,
-    ): Int {
-        var nextIndex = lineIndex
-        while (callStack.isNotEmpty() && callStack.last().autoReturn) {
-            val frame = callStack.last()
-            val bounds = labelBounds[frame.label]
-            if (bounds == null || !isWithinBounds(nextIndex, bounds)) {
-                nextIndex = frame.returnIndex
-                callStack.removeLastOrNull()
-                continue
-            }
-            break
-        }
-        return nextIndex
-    }
 }
