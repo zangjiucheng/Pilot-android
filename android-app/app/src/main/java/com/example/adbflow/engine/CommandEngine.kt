@@ -273,7 +273,7 @@ class CommandEngine(
     private suspend fun checkColorLine(command: String): JumpDirective? {
         val tokens = tokenize(command)
         if (tokens.size < 5) {
-            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [THEN ...] [ELSE ...]")
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [minRun] [THEN ...] [ELSE ...]")
             return null
         }
 
@@ -286,7 +286,7 @@ class CommandEngine(
         }
 
         if (tokens.size < offset + 4) {
-            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [THEN ...] [ELSE ...]")
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [minRun] [THEN ...] [ELSE ...]")
             return null
         }
 
@@ -335,6 +335,18 @@ class CommandEngine(
                 remainder.removeAt(0)
             }
         }
+        var minRun = 1
+        if (remainder.isNotEmpty()) {
+            val maybeMinRun = remainder.first().toIntOrNull()
+            if (maybeMinRun != null) {
+                if (maybeMinRun <= 0) {
+                    log("!! minRun must be > 0")
+                    return null
+                }
+                minRun = maybeMinRun
+                remainder.removeAt(0)
+            }
+        }
 
         val (onMatch, onMismatch) = try {
             parseBranchTokens(remainder)
@@ -344,9 +356,9 @@ class CommandEngine(
         }
 
         val (hit, hitAxisName) = if (axis == "Y") {
-            log("> Scanning y=$fixed from x=$start to x=$end for color $expected ±$tolerance step=$step")
+            log("> Scanning y=$fixed from x=$start to x=$end for color $expected ±$tolerance step=$step minRun=$minRun")
             val hitX = runWithRetries("CHECK_COLOR_LINE") {
-                service.findColorXOnHorizontalLine(fixed, start, end, expected, tolerance, step, log)
+                service.findColorXOnHorizontalLine(fixed, start, end, expected, tolerance, step, minRun, log)
             }
                 ?: run {
                     clearLineHitVariables()
@@ -356,9 +368,9 @@ class CommandEngine(
             setScriptVariable("LAST_Y", fixed)
             Pair(hitX, "x")
         } else {
-            log("> Scanning x=$fixed from y=$start to y=$end for color $expected ±$tolerance step=$step")
+            log("> Scanning x=$fixed from y=$start to y=$end for color $expected ±$tolerance step=$step minRun=$minRun")
             val hitY = runWithRetries("CHECK_COLOR_LINE") {
-                service.findColorYOnVerticalLine(fixed, start, end, expected, tolerance, step, log)
+                service.findColorYOnVerticalLine(fixed, start, end, expected, tolerance, step, minRun, log)
             }
                 ?: run {
                     clearLineHitVariables()

@@ -5,8 +5,9 @@ This folder contains an on-device Android automation app (no computer/ADB requir
 ## What it does
 - Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `CHECK_COLOR_LINE`, `CHECK_OCR`, `EXIT`.
   - `CHECK_COLOR_LINE` supports:
-    - `CHECK_COLOR_LINE <x> <y1> <y2> <color> [tolerance] [step] ...` (fixed x, scan y)
-    - `CHECK_COLOR_LINE Y <y> <x1> <x2> <color> [tolerance] [step] ...` (fixed y, scan x)
+    - `CHECK_COLOR_LINE <x> <y1> <y2> <color> [tolerance] [step] [minRun] ...` (fixed x, scan y)
+    - `CHECK_COLOR_LINE Y <y> <x1> <x2> <color> [tolerance] [step] [minRun] ...` (fixed y, scan x)
+    - `minRun` is the minimum continuous matched distance (in pixels) required to treat as a hit.
     - On hit, sets script variables `${LAST_X}` and `${LAST_Y}` for later commands.
     - Variables support numeric offsets, e.g. `${LAST_Y-120}`, `${LAST_Y+180}`.
     - Variables also support defaults, e.g. `${LAST_Y:-2000}`.

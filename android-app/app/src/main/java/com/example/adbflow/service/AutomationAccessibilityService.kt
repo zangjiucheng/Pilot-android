@@ -406,6 +406,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         expected: Triple<Int, Int, Int>,
         tolerance: Int,
         step: Int = 1,
+        minRun: Int = 1,
         log: (String) -> Unit,
     ): Int? {
         if (!hasRootAccess()) {
@@ -425,7 +426,9 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
 
             val delta = step.coerceAtLeast(1) * if (y2 >= y1) 1 else -1
+            val requiredRun = minRun.coerceAtLeast(1)
             var y = y1
+            var runStartY: Int? = null
             while (true) {
                 val pixel = bitmap.getPixel(x, y)
                 val actual = Triple(
@@ -436,7 +439,15 @@ class AutomationAccessibilityService : AccessibilityService() {
                 val matches = listOf(actual.first, actual.second, actual.third)
                     .zip(listOf(expected.first, expected.second, expected.third))
                     .all { (a, b) -> kotlin.math.abs(a - b) <= tolerance }
-                if (matches) return y
+                if (matches) {
+                    if (runStartY == null) {
+                        runStartY = y
+                    }
+                    val runLength = kotlin.math.abs(y - runStartY) + 1
+                    if (runLength >= requiredRun) return runStartY
+                } else {
+                    runStartY = null
+                }
 
                 if (y == y2) break
                 val next = y + delta
@@ -457,6 +468,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         expected: Triple<Int, Int, Int>,
         tolerance: Int,
         step: Int = 1,
+        minRun: Int = 1,
         log: (String) -> Unit,
     ): Int? {
         if (!hasRootAccess()) {
@@ -476,7 +488,9 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
 
             val delta = step.coerceAtLeast(1) * if (x2 >= x1) 1 else -1
+            val requiredRun = minRun.coerceAtLeast(1)
             var x = x1
+            var runStartX: Int? = null
             while (true) {
                 val pixel = bitmap.getPixel(x, y)
                 val actual = Triple(
@@ -487,7 +501,15 @@ class AutomationAccessibilityService : AccessibilityService() {
                 val matches = listOf(actual.first, actual.second, actual.third)
                     .zip(listOf(expected.first, expected.second, expected.third))
                     .all { (a, b) -> kotlin.math.abs(a - b) <= tolerance }
-                if (matches) return x
+                if (matches) {
+                    if (runStartX == null) {
+                        runStartX = x
+                    }
+                    val runLength = kotlin.math.abs(x - runStartX) + 1
+                    if (runLength >= requiredRun) return runStartX
+                } else {
+                    runStartX = null
+                }
 
                 if (x == x2) break
                 val next = x + delta
