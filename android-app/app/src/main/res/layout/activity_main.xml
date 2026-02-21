@@ -153,6 +153,13 @@
                         android:layout_weight="1"
                         android:text="Stop" />
                 </LinearLayout>
+
+                <Button
+                    android:id="@+id/clearScriptButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/clear_script" />
             </LinearLayout>
 
             <LinearLayout
@@ -254,6 +261,60 @@
                         </LinearLayout>
                     </LinearLayout>
                 </ScrollView>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/pageRecord"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="10dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_card_panel"
+                android:orientation="vertical"
+                android:padding="10dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/recordStatusView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_card_soft"
+                    android:padding="8dp"
+                    android:text="@string/record_status_idle"
+                    android:textColor="#111111"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_card_soft"
+                    android:padding="8dp"
+                    android:text="@string/record_tip_delay"
+                    android:textColor="#111111"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/startRecordButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/start_record" />
+
+                    <Button
+                        android:id="@+id/stopRecordInsertButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:layout_weight="1"
+                        android:text="@string/stop_record_insert" />
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout
@@ -398,6 +459,13 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/page_files" />
+
+        <Button
+            android:id="@+id/navRecordButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/page_record" />
 
         <Button
             android:id="@+id/navLogsButton"

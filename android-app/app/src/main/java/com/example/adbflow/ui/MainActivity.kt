@@ -48,8 +48,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pageTitleView: TextView
     private lateinit var pageAutomation: LinearLayout
     private lateinit var pageFiles: LinearLayout
+    private lateinit var pageRecord: LinearLayout
     private lateinit var pageLogs: LinearLayout
     private lateinit var pageTips: LinearLayout
+    private lateinit var recordStatusView: TextView
     private var lastBackgroundRes: Int? = null
     private var lastBackgroundAssetPath: String? = null
     private var assetBackgroundCandidates: List<String> = emptyList()
@@ -109,8 +111,10 @@ class MainActivity : AppCompatActivity() {
         pageTitleView = findViewById(R.id.pageTitleView)
         pageAutomation = findViewById(R.id.pageAutomation)
         pageFiles = findViewById(R.id.pageFiles)
+        pageRecord = findViewById(R.id.pageRecord)
         pageLogs = findViewById(R.id.pageLogs)
         pageTips = findViewById(R.id.pageTips)
+        recordStatusView = findViewById(R.id.recordStatusView)
         templateSpinner = findViewById(R.id.templateSpinner)
         assetBackgroundCandidates = listAssetBackgrounds()
         bundledScriptRepository = BundledScriptRepository(this)
@@ -118,10 +122,14 @@ class MainActivity : AppCompatActivity() {
         val enableService = findViewById<Button>(R.id.enableServiceButton)
         val runButton = findViewById<Button>(R.id.runButton)
         val stopButton = findViewById<Button>(R.id.stopButton)
+        val clearScriptButton = findViewById<Button>(R.id.clearScriptButton)
+        val startRecordButton = findViewById<Button>(R.id.startRecordButton)
+        val stopRecordInsertButton = findViewById<Button>(R.id.stopRecordInsertButton)
         val clearLogsButton = findViewById<Button>(R.id.clearLogsButton)
         val sidebarToggleButton = findViewById<View>(R.id.sidebarToggleButton)
         val navAutomationButton = findViewById<Button>(R.id.navAutomationButton)
         val navFilesButton = findViewById<Button>(R.id.navFilesButton)
+        val navRecordButton = findViewById<Button>(R.id.navRecordButton)
         val navLogsButton = findViewById<Button>(R.id.navLogsButton)
         val navTipsButton = findViewById<Button>(R.id.navTipsButton)
         val applyTemplateButton = findViewById<Button>(R.id.applyTemplateButton)
@@ -156,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         }
         navAutomationButton.setOnClickListener { switchPage(Page.AUTOMATION) }
         navFilesButton.setOnClickListener { switchPage(Page.FILES) }
+        navRecordButton.setOnClickListener { switchPage(Page.RECORD) }
         navLogsButton.setOnClickListener { switchPage(Page.LOGS) }
         navTipsButton.setOnClickListener { switchPage(Page.TIPS) }
         switchPage(Page.AUTOMATION)
@@ -189,8 +198,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val firstTemplate = bundledScriptRepository.firstScriptOrNull()
-        commandEditor.setText(firstTemplate.orEmpty())
+        commandEditor.setText("")
         filePathView.setText(R.string.file_path_default)
 
         enableService.setOnClickListener {
@@ -204,6 +212,30 @@ class MainActivity : AppCompatActivity() {
 
         stopButton.setOnClickListener {
             AutomationAccessibilityService.stopScript()
+        }
+
+        clearScriptButton.setOnClickListener {
+            commandEditor.setText("")
+            currentFileUri = null
+            filePathView.setText(R.string.file_path_default)
+            toast("Current script cleared")
+        }
+
+        startRecordButton.setOnClickListener {
+            val delaySeconds = countdownSecondsSeekbar.progress
+            AutomationAccessibilityService.startOperationRecording(delaySeconds)
+        }
+
+        stopRecordInsertButton.setOnClickListener {
+            val recorded = AutomationAccessibilityService.stopOperationRecordingAndExport()
+            if (recorded.isBlank()) {
+                toast("No operations recorded. Try record outside this app and perform taps/scrolls.")
+                return@setOnClickListener
+            }
+            val current = commandEditor.text.toString().trimEnd()
+            val merged = if (current.isBlank()) recorded else "$current\n$recorded"
+            commandEditor.setText(merged)
+            toast("Recorded operations inserted")
         }
 
         clearLogsButton.setOnClickListener {
@@ -250,6 +282,26 @@ class MainActivity : AppCompatActivity() {
                         logView.text = lines.joinToString("\n")
                     }
                 }
+                launch {
+                    AutomationAccessibilityService.isRecording.collect { recording ->
+                        startRecordButton.isEnabled = !recording
+                        stopRecordInsertButton.isEnabled = recording
+                        recordStatusView.setText(
+                            if (recording) R.string.record_status_recording else R.string.record_status_idle
+                        )
+                    }
+                }
+                launch {
+                    AutomationAccessibilityService.pendingRecordedScript.collect { pending ->
+                        if (pending.isNullOrBlank()) return@collect
+                        val current = commandEditor.text.toString().trimEnd()
+                        val merged = if (current.isBlank()) pending else "$current\n$pending"
+                        commandEditor.setText(merged)
+                        AutomationAccessibilityService.clearPendingRecordedScript()
+                        switchPage(Page.AUTOMATION)
+                        toast("Recorded operations inserted")
+                    }
+                }
             }
         }
     }
@@ -270,12 +322,14 @@ class MainActivity : AppCompatActivity() {
     private fun switchPage(page: Page) {
         pageAutomation.visibility = if (page == Page.AUTOMATION) android.view.View.VISIBLE else android.view.View.GONE
         pageFiles.visibility = if (page == Page.FILES) android.view.View.VISIBLE else android.view.View.GONE
+        pageRecord.visibility = if (page == Page.RECORD) android.view.View.VISIBLE else android.view.View.GONE
         pageLogs.visibility = if (page == Page.LOGS) android.view.View.VISIBLE else android.view.View.GONE
         pageTips.visibility = if (page == Page.TIPS) android.view.View.VISIBLE else android.view.View.GONE
 
         val titleRes = when (page) {
             Page.AUTOMATION -> R.string.page_automation
             Page.FILES -> R.string.page_files
+            Page.RECORD -> R.string.page_record
             Page.LOGS -> R.string.page_logs
             Page.TIPS -> R.string.page_tips
         }
@@ -286,6 +340,7 @@ class MainActivity : AppCompatActivity() {
     private enum class Page {
         AUTOMATION,
         FILES,
+        RECORD,
         LOGS,
         TIPS,
     }

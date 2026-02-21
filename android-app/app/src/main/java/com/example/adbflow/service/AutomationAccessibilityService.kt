@@ -12,8 +12,11 @@ import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
 import com.example.adbflow.engine.CommandEngine
 import com.google.mlkit.vision.common.InputImage
@@ -40,11 +43,24 @@ import kotlin.coroutines.resumeWithException
 class AutomationAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scriptJob: Job? = null
+    private var recordJob: Job? = null
     private var countdownOverlayView: TextView? = null
+    private var recordTouchOverlayView: View? = null
     private var latinTextRecognizer: TextRecognizer? = null
     private var chineseTextRecognizer: TextRecognizer? = null
     @Volatile
     private var rootAccessCached: Boolean? = null
+    private val recordedLines = mutableListOf<String>()
+    private val recordedSwipePathPoints = mutableListOf<Pair<Int, Int>>()
+    private val activeTouchPoints = mutableListOf<Pair<Int, Int>>()
+    private var lastRecordedLine: String? = null
+    private var lastRecordedAtMs: Long = 0L
+    private var lastRecordedCommandAtMs: Long = 0L
+    private var lastTouchSampleAtMs: Long = 0L
+    private var lastScrollDeltaX: Int = 0
+    private var lastScrollDeltaY: Int = 0
+    @Volatile
+    private var suppressTouchCaptureUntilMs: Long = 0L
 
     companion object {
         @Volatile
@@ -53,6 +69,10 @@ class AutomationAccessibilityService : AccessibilityService() {
 
         private val mutableLogs = MutableStateFlow<List<String>>(emptyList())
         val logs: StateFlow<List<String>> = mutableLogs
+        private val mutableRecording = MutableStateFlow(false)
+        val isRecording: StateFlow<Boolean> = mutableRecording
+        private val mutablePendingRecordedScript = MutableStateFlow<String?>(null)
+        val pendingRecordedScript: StateFlow<String?> = mutablePendingRecordedScript
 
         fun appendLog(line: String) {
             val next = (mutableLogs.value + line).takeLast(300)
@@ -83,6 +103,37 @@ class AutomationAccessibilityService : AccessibilityService() {
             appendLog("> Script stopped")
         }
 
+        fun startOperationRecording(countdownSeconds: Int = 0) {
+            val service = instance
+            if (service == null) {
+                appendLog("!! Accessibility service is not connected.")
+                return
+            }
+            service.startOperationRecordingInternal(countdownSeconds.coerceAtLeast(0))
+        }
+
+        fun stopOperationRecordingAndExport(): String {
+            val service = instance
+            if (service == null) {
+                appendLog("!! Accessibility service is not connected.")
+                return ""
+            }
+            return service.stopOperationRecordingInternal()
+        }
+
+        fun stopOperationRecording() {
+            val service = instance ?: return
+            val recorded = service.stopOperationRecordingInternal()
+            appendLog("> Recording stopped by volume key (${recorded.lineSequence().count()} lines)")
+            if (recorded.isNotBlank()) {
+                mutablePendingRecordedScript.value = recorded
+            }
+        }
+
+        fun clearPendingRecordedScript() {
+            mutablePendingRecordedScript.value = null
+        }
+
         private fun containsRootRequiredCommands(script: String): Boolean {
             return script.lineSequence().any { line ->
                 val trimmed = line.trim()
@@ -94,13 +145,33 @@ class AutomationAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val evt = event ?: return
+        if (!mutableRecording.value) return
+        if (System.currentTimeMillis() < suppressTouchCaptureUntilMs) return
+        if (recordTouchOverlayView != null) return
+        when (evt.eventType) {
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> recordTapFromNode(evt.source)
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> recordSwipePathPointFromScrollEvent(evt)
+        }
+    }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                if (mutableRecording.value) {
+                    stopOperationRecording()
+                    return false
+                }
                 stopScript()
                 return false
+            }
+            if (mutableRecording.value) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_BACK -> recordLine("BACK")
+                    KeyEvent.KEYCODE_HOME -> recordLine("HOME")
+                }
             }
         }
         return super.onKeyEvent(event)
@@ -124,7 +195,21 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        recordJob?.cancel()
+        recordJob = null
         rootAccessCached = null
+        mutableRecording.value = false
+        synchronized(recordedLines) { recordedLines.clear() }
+        synchronized(recordedSwipePathPoints) { recordedSwipePathPoints.clear() }
+        synchronized(activeTouchPoints) { activeTouchPoints.clear() }
+        lastRecordedLine = null
+        lastRecordedAtMs = 0L
+        lastRecordedCommandAtMs = 0L
+        lastTouchSampleAtMs = 0L
+        lastScrollDeltaX = 0
+        lastScrollDeltaY = 0
+        suppressTouchCaptureUntilMs = 0L
+        removeRecordingTouchOverlayNow()
         latinTextRecognizer?.close()
         latinTextRecognizer = null
         chineseTextRecognizer?.close()
@@ -155,6 +240,309 @@ class AutomationAccessibilityService : AccessibilityService() {
                 appendLog("> Script finished")
             }
         }
+    }
+
+    private fun startOperationRecordingInternal(countdownSeconds: Int) {
+        recordJob?.cancel()
+        recordJob = scope.launch {
+            if (countdownSeconds > 0) {
+                appendLog("> Recording starts in $countdownSeconds seconds")
+                showGlobalCountdown(countdownSeconds)
+            }
+            beginRecordingNow()
+        }
+    }
+
+    private fun beginRecordingNow() {
+        synchronized(recordedLines) {
+            recordedLines.clear()
+        }
+        synchronized(recordedSwipePathPoints) {
+            recordedSwipePathPoints.clear()
+        }
+        synchronized(activeTouchPoints) {
+            activeTouchPoints.clear()
+        }
+        lastRecordedLine = null
+        lastRecordedAtMs = 0L
+        lastRecordedCommandAtMs = 0L
+        lastTouchSampleAtMs = 0L
+        lastScrollDeltaX = 0
+        lastScrollDeltaY = 0
+        suppressTouchCaptureUntilMs = 0L
+        mutableRecording.value = true
+        recordJob = null
+        showRecordingTouchOverlay()
+        appendLog("> Operation recording started")
+    }
+
+    private fun stopOperationRecordingInternal(): String {
+        recordJob?.cancel()
+        recordJob = null
+        mutableRecording.value = false
+        removeRecordingTouchOverlayNow()
+        val lines = synchronized(recordedLines) {
+            recordedLines.toMutableList()
+        }
+        val swipePathLine = buildRecordedSwipePathCommand()
+        if (swipePathLine != null) {
+            maybeAppendSleepLine(lines, System.currentTimeMillis())
+            lines.add(swipePathLine)
+            appendLog("REC $swipePathLine")
+            lastRecordedCommandAtMs = System.currentTimeMillis()
+        }
+        val script = lines.joinToString("\n")
+        appendLog("> Operation recording stopped (${script.lineSequence().count()} lines)")
+        return script
+    }
+
+    private fun recordTapFromNode(node: AccessibilityNodeInfo?) {
+        if (node == null) return
+        try {
+            val rect = android.graphics.Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.width() <= 0 || rect.height() <= 0) return
+            val x = rect.centerX()
+            val y = rect.centerY()
+            recordLine("TAP $x $y")
+        } finally {
+            node.recycle()
+        }
+    }
+
+    private fun recordLine(line: String) {
+        val now = System.currentTimeMillis()
+        if (line == lastRecordedLine && (now - lastRecordedAtMs) < 220L) return
+        synchronized(recordedLines) {
+            maybeAppendSleepLine(recordedLines, now)
+            recordedLines.add(line)
+        }
+        lastRecordedLine = line
+        lastRecordedAtMs = now
+        lastRecordedCommandAtMs = now
+        appendLog("REC $line")
+    }
+
+    private fun maybeAppendSleepLine(lines: MutableList<String>, nowMs: Long) {
+        if (lastRecordedCommandAtMs <= 0L) return
+        val deltaMs = nowMs - lastRecordedCommandAtMs
+        if (deltaMs < 250L) return
+        val seconds = deltaMs / 1000.0
+        lines.add(String.format(Locale.US, "SLEEP %.2f", seconds))
+    }
+
+    private fun showRecordingTouchOverlay() {
+        mainExecutor.execute {
+            if (!mutableRecording.value || recordTouchOverlayView != null) return@execute
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            val overlay = View(this).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setOnTouchListener { _, motionEvent ->
+                    handleRecordingTouchEvent(motionEvent)
+                    true
+                }
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT,
+            )
+            runCatching { wm.addView(overlay, params) }
+                .onSuccess {
+                    recordTouchOverlayView = overlay
+                    appendLog("> Recorder precise mode enabled (touch is forwarded)")
+                }
+                .onFailure {
+                    appendLog("!! Recorder overlay unavailable, fallback to accessibility events.")
+                }
+        }
+    }
+
+    private fun removeRecordingTouchOverlayNow() {
+        val view = recordTouchOverlayView ?: return
+        mainExecutor.execute {
+            val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            runCatching { wm.removeView(view) }
+            recordTouchOverlayView = null
+        }
+    }
+
+    private fun handleRecordingTouchEvent(event: MotionEvent) {
+        if (!mutableRecording.value) return
+        val now = System.currentTimeMillis()
+        if (now < suppressTouchCaptureUntilMs) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                appendLog(".. recorder suppressing forwarded touch")
+            }
+            return
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                synchronized(activeTouchPoints) {
+                    activeTouchPoints.clear()
+                    activeTouchPoints.add(Pair(event.rawX.toInt(), event.rawY.toInt()))
+                }
+                lastTouchSampleAtMs = now
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (now - lastTouchSampleAtMs >= 333L) {
+                    synchronized(activeTouchPoints) {
+                        activeTouchPoints.add(Pair(event.rawX.toInt(), event.rawY.toInt()))
+                    }
+                    lastTouchSampleAtMs = now
+                }
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                val points = synchronized(activeTouchPoints) {
+                    val copy = activeTouchPoints.toMutableList()
+                    copy.add(Pair(event.rawX.toInt(), event.rawY.toInt()))
+                    activeTouchPoints.clear()
+                    copy
+                }
+                recordAndForwardTouchGesture(points)
+            }
+        }
+    }
+
+    private fun recordAndForwardTouchGesture(pointsRaw: List<Pair<Int, Int>>) {
+        if (pointsRaw.isEmpty()) return
+        val points = pointsRaw.fold(mutableListOf<Pair<Int, Int>>()) { acc, p ->
+            val last = acc.lastOrNull()
+            if (last == null || kotlin.math.abs(last.first - p.first) > 2 || kotlin.math.abs(last.second - p.second) > 2) {
+                acc.add(p)
+            }
+            acc
+        }
+        if (points.isEmpty()) return
+
+        val start = points.first()
+        val end = points.last()
+        val distance = kotlin.math.hypot(
+            (end.first - start.first).toDouble(),
+            (end.second - start.second).toDouble(),
+        )
+
+        if (distance < 24.0 || points.size == 1) {
+            recordLine("TAP ${end.first} ${end.second}")
+            scope.launch {
+                runCatching {
+                    forwardWithUiPassThrough(550L) {
+                        performTap(end.first.toFloat(), end.second.toFloat())
+                    }
+                }
+            }
+            return
+        }
+
+        if (points.size == 2) {
+            recordLine("SWIPE ${start.first} ${start.second} ${end.first} ${end.second} 300")
+            scope.launch {
+                runCatching {
+                    forwardWithUiPassThrough(900L) {
+                        performSwipe(
+                            start.first.toFloat(),
+                            start.second.toFloat(),
+                            end.first.toFloat(),
+                            end.second.toFloat(),
+                            300L,
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        val payload = points.joinToString(" ") { "${it.first} ${it.second}" }
+        val floatPoints = points.map { Pair(it.first.toFloat(), it.second.toFloat()) }
+        val durationMs = calculateDurationFromPath(floatPoints)
+        recordLine("SWIPEPATH $payload $durationMs")
+        val estimatedDuration = durationMs + 450L
+        scope.launch {
+            runCatching {
+                forwardWithUiPassThrough(estimatedDuration) {
+                    performSwipePath(floatPoints, durationMs)
+                }
+            }
+        }
+    }
+
+    private suspend fun forwardWithUiPassThrough(suppressDurationMs: Long, block: suspend () -> Unit) {
+        val now = System.currentTimeMillis()
+        suppressTouchCaptureUntilMs = now + suppressDurationMs + 250L
+        removeRecordingTouchOverlayNow()
+        delay(50L)
+        try {
+            block()
+        } finally {
+            delay(120L)
+            if (mutableRecording.value) {
+                showRecordingTouchOverlay()
+            }
+        }
+    }
+
+    private fun recordSwipePathPointFromScrollEvent(event: AccessibilityEvent) {
+        val now = System.currentTimeMillis()
+        if (now - lastTouchSampleAtMs < 333L) return
+
+        val source = event.source
+        val point = if (source != null) {
+            try {
+                val rect = android.graphics.Rect()
+                source.getBoundsInScreen(rect)
+                if (rect.width() <= 0 || rect.height() <= 0) return
+                Pair(rect.centerX(), rect.centerY())
+            } finally {
+                source.recycle()
+            }
+        } else {
+            Pair(resources.displayMetrics.widthPixels / 2, resources.displayMetrics.heightPixels / 2)
+        }
+
+        synchronized(recordedSwipePathPoints) {
+            val last = recordedSwipePathPoints.lastOrNull()
+            if (last == null || kotlin.math.abs(last.first - point.first) > 4 || kotlin.math.abs(last.second - point.second) > 4) {
+                recordedSwipePathPoints.add(point)
+                appendLog("REC SWIPEPATH_POINT ${point.first} ${point.second}")
+            }
+        }
+        lastScrollDeltaX = event.scrollDeltaX
+        lastScrollDeltaY = event.scrollDeltaY
+        lastTouchSampleAtMs = now
+    }
+
+    private fun buildRecordedSwipePathCommand(): String? {
+        val points = synchronized(recordedSwipePathPoints) { recordedSwipePathPoints.toList() }
+        if (points.isEmpty()) return null
+        if (points.size == 1) {
+            val p = points.first()
+            val width = resources.displayMetrics.widthPixels
+            val height = resources.displayMetrics.heightPixels
+            val dist = (kotlin.math.min(width, height) * 0.22f).toInt().coerceAtLeast(140)
+            return if (kotlin.math.abs(lastScrollDeltaY) >= kotlin.math.abs(lastScrollDeltaX)) {
+                if (lastScrollDeltaY > 0) {
+                    "SWIPE ${p.first} ${p.second - dist} ${p.first} ${p.second + dist} 300"
+                } else {
+                    "SWIPE ${p.first} ${p.second + dist} ${p.first} ${p.second - dist} 300"
+                }
+            } else {
+                if (lastScrollDeltaX > 0) {
+                    "SWIPE ${p.first - dist} ${p.second} ${p.first + dist} ${p.second} 300"
+                } else {
+                    "SWIPE ${p.first + dist} ${p.second} ${p.first - dist} ${p.second} 300"
+                }
+            }
+        }
+        val payload = points.joinToString(" ") { "${it.first} ${it.second}" }
+        val floatPoints = points.map { Pair(it.first.toFloat(), it.second.toFloat()) }
+        val durationMs = calculateDurationFromPath(floatPoints)
+        return "SWIPEPATH $payload $durationMs"
     }
 
     private suspend fun showGlobalCountdown(seconds: Int) {
@@ -268,6 +656,50 @@ class AutomationAccessibilityService : AccessibilityService() {
                 log("> SWIPE $x1 $y1 $x2 $y2 $duration")
             }
 
+            "SWIPEPATH" -> {
+                val args = normalizedTokens.drop(1)
+                if (args.size < 4) {
+                    log("!! SWIPEPATH usage: SWIPEPATH <x1> <y1> <x2> <y2> [<x3> <y3> ...] [durationMs]")
+                    return
+                }
+
+                var durationMs = 260L
+                var pointTokenCount = args.size
+                val explicitDuration = (pointTokenCount % 2 == 1)
+                if (pointTokenCount % 2 == 1) {
+                    durationMs = args.last().toLongOrNull() ?: run {
+                        log("!! SWIPEPATH invalid duration")
+                        return
+                    }
+                    pointTokenCount -= 1
+                }
+                if (pointTokenCount < 4 || pointTokenCount % 2 != 0) {
+                    log("!! SWIPEPATH requires at least 2 points: x1 y1 x2 y2 ...")
+                    return
+                }
+
+                val maxX = (resources.displayMetrics.widthPixels - 1).coerceAtLeast(0).toFloat()
+                val maxY = (resources.displayMetrics.heightPixels - 1).coerceAtLeast(0).toFloat()
+                val points = mutableListOf<Pair<Float, Float>>()
+                var i = 0
+                while (i < pointTokenCount) {
+                    val x = args[i].toFloatOrNull()
+                    val y = args[i + 1].toFloatOrNull()
+                    if (x == null || y == null) {
+                        log("!! SWIPEPATH invalid coordinate at index $i")
+                        return
+                    }
+                    points.add(Pair(x.coerceIn(0f, maxX), y.coerceIn(0f, maxY)))
+                    i += 2
+                }
+                if (!explicitDuration) {
+                    durationMs = calculateDurationFromPath(points)
+                }
+
+                performSwipePath(points, durationMs)
+                log("> SWIPEPATH ${points.size} points duration=$durationMs (continuous hold)")
+            }
+
             "BACK" -> performGlobalAction(GLOBAL_ACTION_BACK)
             "HOME" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "LOCK", "SLEEP_DEVICE" -> {
@@ -277,7 +709,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
 
             else -> {
-                log("!! Unsupported command: $command. Use TAP/SWIPE/BACK/HOME/LOCK")
+                log("!! Unsupported command: $command. Use TAP/SWIPE/SWIPEPATH/BACK/HOME/LOCK")
                 throw IllegalArgumentException("Unsupported command: $command")
             }
         }
@@ -345,6 +777,61 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     private suspend fun performTap(x: Float, y: Float) {
         performSwipe(x, y, x, y, 20L)
+    }
+
+    private suspend fun performSwipePath(points: List<Pair<Float, Float>>, durationMs: Long) {
+        if (points.size < 2) {
+            throw IllegalArgumentException("SWIPEPATH needs at least 2 points")
+        }
+        suspendCancellableCoroutine { continuation ->
+            val path = Path().apply {
+                moveTo(points.first().first, points.first().second)
+                for (index in 1 until points.size) {
+                    lineTo(points[index].first, points[index].second)
+                }
+            }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(1L)))
+                .build()
+
+            val dispatched = dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(Unit)
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) {
+                            continuation.resumeWithException(IllegalStateException("Swipe path gesture cancelled"))
+                        }
+                    }
+                },
+                null,
+            )
+
+            if (!dispatched && continuation.isActive) {
+                continuation.resumeWithException(IllegalStateException("Failed to dispatch swipe path gesture"))
+            }
+        }
+    }
+
+    private fun calculateDurationFromPath(
+        points: List<Pair<Float, Float>>,
+        targetVelocityPxPerSec: Float = 1800f,
+    ): Long {
+        if (points.size < 2) return 220L
+        var distance = 0.0
+        for (index in 0 until points.lastIndex) {
+            val from = points[index]
+            val to = points[index + 1]
+            distance += kotlin.math.hypot(
+                (to.first - from.first).toDouble(),
+                (to.second - from.second).toDouble(),
+            )
+        }
+        val ms = (distance / targetVelocityPxPerSec * 1000.0).toLong()
+        return ms.coerceIn(220L, 2400L)
     }
 
     private suspend fun performSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) {

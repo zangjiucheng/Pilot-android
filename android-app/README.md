@@ -14,7 +14,21 @@ This folder contains an on-device Android automation app (no computer/ADB requir
 - Native action commands:
   - `TAP x y`
   - `SWIPE x1 y1 x2 y2 [durationMs]`
+  - `SWIPEPATH x1 y1 x2 y2 [x3 y3 ...] [durationMs]` (single continuous hold gesture, auto-duration by path length when omitted)
   - `BACK`, `HOME`, `LOCK`
+- Built-in operation recorder:
+  - Open **Record** page and tap **Start Record**.
+  - Recorder uses the same delay seconds configured in Automation page.
+  - In precise mode, a touch-capture overlay records raw touch paths and forwards gestures back via accessibility gestures.
+  - During forwarding, recorder briefly releases the overlay and restores it after forwarding completes.
+  - Volume Up/Down stops recording immediately when recorder is active.
+  - When recording is stopped by volume key, recorded commands are queued and auto-inserted into the script editor.
+  - Each touch session (finger down -> finger up) generates one command (`TAP`, `SWIPE`, or `SWIPEPATH`).
+  - Do manual taps/back/home/scroll operations on device.
+  - Scroll path points are sampled at about 3 FPS and exported as `SWIPEPATH`.
+  - If only one scroll sample is captured, recorder falls back to a single directional `SWIPE`.
+  - Recorder inserts `SLEEP <seconds>` between operations to preserve timing.
+  - Return to app and tap **Stop & Insert** to append recorded commands into script editor.
 - Legacy `adb shell input ...` lines are auto-converted for compatibility.
 - `CHECK_COLOR` and `CHECK_OCR` are supported only on rooted devices.
 - Bundled example scripts are stored in app assets: `app/src/main/assets/default-scripts/`.
