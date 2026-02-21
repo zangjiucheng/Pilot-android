@@ -33,6 +33,9 @@ class CommandEngine(
     private val service: AutomationAccessibilityService,
     private val log: (String) -> Unit,
 ) {
+    private val variablePattern = Regex("\\$\\{([A-Za-z_][A-Za-z0-9_]*)([+\\-][0-9]+)?\\}")
+    private val scriptVariables = mutableMapOf<String, String>()
+
     suspend fun runScript(script: String) {
         val lines = script.lines()
         val labels = mutableMapOf<String, Int>()
@@ -130,7 +133,8 @@ class CommandEngine(
     }
 
     private suspend fun runLine(raw: String): JumpDirective? {
-        val cmd = raw.trim()
+        val rawCmd = raw.trim()
+        val cmd = resolveVariables(rawCmd) ?: return null
         if (cmd.isEmpty() || cmd.startsWith("#")) return null
 
         val normalized = cmd.uppercase(Locale.US)
@@ -172,6 +176,7 @@ class CommandEngine(
             delay((clamped * 1000).toLong())
             return null
         }
+        if (normalized.startsWith("CHECK_COLOR_LINE")) return checkColorLine(cmd)
         if (normalized.startsWith("CHECK_COLOR")) return checkColor(cmd)
         if (normalized.startsWith("CHECK_OCR")) return checkOcr(cmd)
 
@@ -262,10 +267,97 @@ class CommandEngine(
         }
     }
 
+    private suspend fun checkColorLine(command: String): JumpDirective? {
+        val tokens = tokenize(command)
+        if (tokens.size < 5) {
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [THEN ...] [ELSE ...]")
+            return null
+        }
+
+        var offset = 1
+        var axis = "X" // default legacy mode: fixed X, scan Y.
+        val maybeAxis = tokens[1].uppercase(Locale.US)
+        if (maybeAxis == "X" || maybeAxis == "Y") {
+            axis = maybeAxis
+            offset = 2
+        }
+
+        if (tokens.size < offset + 4) {
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [THEN ...] [ELSE ...]")
+            return null
+        }
+
+        val fixed = tokens[offset].toIntOrNull()
+        val start = tokens[offset + 1].toIntOrNull()
+        val end = tokens[offset + 2].toIntOrNull()
+        if (fixed == null || start == null || end == null) {
+            log("!! Invalid CHECK_COLOR_LINE coordinates")
+            return null
+        }
+
+        val remainder = tokens.drop(offset + 3).toMutableList()
+        if (remainder.isEmpty()) {
+            log("!! CHECK_COLOR_LINE missing color argument")
+            return null
+        }
+
+        val expected = try {
+            parseRgb(remainder.removeAt(0))
+        } catch (e: IllegalArgumentException) {
+            log("!! Invalid CHECK_COLOR_LINE color: ${e.message}")
+            return null
+        }
+
+        var tolerance = 0
+        if (remainder.isNotEmpty()) {
+            val maybeTol = remainder.first().toIntOrNull()
+            if (maybeTol != null) {
+                if (maybeTol < 0) {
+                    log("!! tolerance must be >= 0")
+                    return null
+                }
+                tolerance = maybeTol
+                remainder.removeAt(0)
+            }
+        }
+
+        val (onMatch, onMismatch) = try {
+            parseBranchTokens(remainder)
+        } catch (e: IllegalArgumentException) {
+            log("!! Invalid CHECK_COLOR_LINE branching syntax: ${e.message}")
+            return null
+        }
+
+        val (hit, hitAxisName) = if (axis == "Y") {
+            log("> Scanning y=$fixed from x=$start to x=$end for color $expected ±$tolerance")
+            val hitX = service.findColorXOnHorizontalLine(fixed, start, end, expected, tolerance, log)
+                ?: run {
+                    clearLineHitVariables()
+                    return branchTargetToDirective(onMismatch)
+                }
+            setScriptVariable("LAST_X", hitX)
+            setScriptVariable("LAST_Y", fixed)
+            Pair(hitX, "x")
+        } else {
+            log("> Scanning x=$fixed from y=$start to y=$end for color $expected ±$tolerance")
+            val hitY = service.findColorYOnVerticalLine(fixed, start, end, expected, tolerance, log)
+                ?: run {
+                    clearLineHitVariables()
+                    return branchTargetToDirective(onMismatch)
+                }
+            setScriptVariable("LAST_X", fixed)
+            setScriptVariable("LAST_Y", hitY)
+            Pair(hitY, "y")
+        }
+
+        log("✓ CHECK_COLOR_LINE hit at $hitAxisName=$hit")
+        return branchTargetToDirective(onMatch)
+    }
+
     private suspend fun checkOcr(command: String): JumpDirective? {
         val tokens = tokenize(command)
         if (tokens.size < 6) {
-            log("!! CHECK_OCR usage: CHECK_OCR <x1> <y1> <x2> <y2> <text> [LANG <language>] [THEN [CALL|GOTO] <label>] [ELSE [CALL|GOTO] <label>]")
+            log("!! CHECK_OCR usage: CHECK_OCR <x1> <y1> <x2> <y2> <text|re:regex> [LANG <language>] [THEN [CALL|GOTO] <label>] [ELSE [CALL|GOTO] <label>]")
             return null
         }
 
@@ -307,7 +399,7 @@ class CommandEngine(
         val recognizedText = service.readTextInRegion(x1, y1, x2, y2, language, log)
             ?: return branchTargetToDirective(onMismatch)
 
-        val matches = recognizedText.contains(expectedText, ignoreCase = true)
+        val matches = matchesExpectedText(recognizedText, expectedText, log)
         return if (matches) {
             log("✓ OCR matched '$expectedText'")
             branchTargetToDirective(onMatch)
@@ -315,6 +407,25 @@ class CommandEngine(
             log("!! OCR mismatch. Expected '$expectedText', got '$recognizedText'")
             branchTargetToDirective(onMismatch)
         }
+    }
+
+    private fun matchesExpectedText(recognizedText: String, expectedText: String, log: (String) -> Unit): Boolean {
+        val trimmed = expectedText.trim()
+        if (trimmed.startsWith("re:", ignoreCase = true)) {
+            val pattern = trimmed.substringAfter(":", "")
+            if (pattern.isBlank()) {
+                log("!! CHECK_OCR regex pattern is empty")
+                return false
+            }
+            return try {
+                Regex(pattern, setOf(RegexOption.IGNORE_CASE))
+                    .containsMatchIn(recognizedText)
+            } catch (e: Exception) {
+                log("!! Invalid CHECK_OCR regex: ${e.message}")
+                false
+            }
+        }
+        return recognizedText.contains(trimmed, ignoreCase = true)
     }
 
     private fun parseBranchTokens(tokens: List<String>): Pair<BranchAction?, BranchAction?> {
@@ -396,6 +507,49 @@ class CommandEngine(
 
     private fun tokenize(command: String): List<String> {
         return command.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+    }
+
+    private fun resolveVariables(command: String): String? {
+        if (!command.contains("\${")) return command
+
+        var hasError = false
+        val resolved = variablePattern.replace(command) { match ->
+            val name = match.groupValues[1]
+            val baseText = scriptVariables[name]
+            if (baseText == null) {
+                hasError = true
+                match.value
+            } else {
+                val offsetText = match.groupValues.getOrNull(2).orEmpty()
+                if (offsetText.isEmpty()) {
+                    baseText
+                } else {
+                    val base = baseText.toIntOrNull()
+                    val offset = offsetText.toIntOrNull()
+                    if (base == null || offset == null) {
+                        log("!! Variable '$name' is not numeric, cannot apply offset in ${match.value}")
+                        hasError = true
+                        match.value
+                    } else {
+                        (base + offset).toString()
+                    }
+                }
+            }
+        }
+        if (hasError) {
+            log("!! Variable resolution failed in line: $command")
+            return null
+        }
+        return resolved
+    }
+
+    private fun setScriptVariable(name: String, value: Int) {
+        scriptVariables[name] = value.toString()
+    }
+
+    private fun clearLineHitVariables() {
+        scriptVariables.remove("LAST_X")
+        scriptVariables.remove("LAST_Y")
     }
 
     private fun isWithinBounds(index: Int, bounds: LabelBounds): Boolean {

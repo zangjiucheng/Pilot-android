@@ -43,6 +43,8 @@ class AutomationAccessibilityService : AccessibilityService() {
     private var countdownOverlayView: TextView? = null
     private var latinTextRecognizer: TextRecognizer? = null
     private var chineseTextRecognizer: TextRecognizer? = null
+    @Volatile
+    private var rootAccessCached: Boolean? = null
 
     companion object {
         @Volatile
@@ -113,6 +115,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         val info = serviceInfo
         info.flags = info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
         serviceInfo = info
+        rootAccessCached = null
         instance = this
         appendLog("> Accessibility service connected")
     }
@@ -121,6 +124,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        rootAccessCached = null
         latinTextRecognizer?.close()
         latinTextRecognizer = null
         chineseTextRecognizer?.close()
@@ -201,6 +205,20 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     fun hasRootAccess(): Boolean {
+        val cached = rootAccessCached
+        if (cached != null) return cached
+
+        synchronized(this) {
+            val secondRead = rootAccessCached
+            if (secondRead != null) return secondRead
+
+            val detected = detectRootAccess()
+            rootAccessCached = detected
+            return detected
+        }
+    }
+
+    private fun detectRootAccess(): Boolean {
         var process: java.lang.Process? = null
         return try {
             process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
@@ -379,6 +397,104 @@ class AutomationAccessibilityService : AccessibilityService() {
             android.graphics.Color.green(pixel),
             android.graphics.Color.blue(pixel),
         )
+    }
+
+    suspend fun findColorYOnVerticalLine(
+        x: Int,
+        y1: Int,
+        y2: Int,
+        expected: Triple<Int, Int, Int>,
+        tolerance: Int,
+        log: (String) -> Unit,
+    ): Int? {
+        if (!hasRootAccess()) {
+            log("!! CHECK_COLOR_LINE requires root")
+            return null
+        }
+
+        val bitmap = captureScreenshotViaRoot(log) ?: return null
+        try {
+            if (x < 0 || x >= bitmap.width) {
+                log("!! x=$x is outside screenshot width ${bitmap.width}")
+                return null
+            }
+            if (y1 < 0 || y1 >= bitmap.height || y2 < 0 || y2 >= bitmap.height) {
+                log("!! y range [$y1, $y2] is outside screenshot height ${bitmap.height}")
+                return null
+            }
+
+            val step = if (y2 >= y1) 1 else -1
+            var y = y1
+            while (true) {
+                val pixel = bitmap.getPixel(x, y)
+                val actual = Triple(
+                    android.graphics.Color.red(pixel),
+                    android.graphics.Color.green(pixel),
+                    android.graphics.Color.blue(pixel),
+                )
+                val matches = listOf(actual.first, actual.second, actual.third)
+                    .zip(listOf(expected.first, expected.second, expected.third))
+                    .all { (a, b) -> kotlin.math.abs(a - b) <= tolerance }
+                if (matches) return y
+
+                if (y == y2) break
+                y += step
+            }
+            return null
+        } finally {
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    suspend fun findColorXOnHorizontalLine(
+        y: Int,
+        x1: Int,
+        x2: Int,
+        expected: Triple<Int, Int, Int>,
+        tolerance: Int,
+        log: (String) -> Unit,
+    ): Int? {
+        if (!hasRootAccess()) {
+            log("!! CHECK_COLOR_LINE requires root")
+            return null
+        }
+
+        val bitmap = captureScreenshotViaRoot(log) ?: return null
+        try {
+            if (y < 0 || y >= bitmap.height) {
+                log("!! y=$y is outside screenshot height ${bitmap.height}")
+                return null
+            }
+            if (x1 < 0 || x1 >= bitmap.width || x2 < 0 || x2 >= bitmap.width) {
+                log("!! x range [$x1, $x2] is outside screenshot width ${bitmap.width}")
+                return null
+            }
+
+            val step = if (x2 >= x1) 1 else -1
+            var x = x1
+            while (true) {
+                val pixel = bitmap.getPixel(x, y)
+                val actual = Triple(
+                    android.graphics.Color.red(pixel),
+                    android.graphics.Color.green(pixel),
+                    android.graphics.Color.blue(pixel),
+                )
+                val matches = listOf(actual.first, actual.second, actual.third)
+                    .zip(listOf(expected.first, expected.second, expected.third))
+                    .all { (a, b) -> kotlin.math.abs(a - b) <= tolerance }
+                if (matches) return x
+
+                if (x == x2) break
+                x += step
+            }
+            return null
+        } finally {
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
     }
 
     suspend fun readTextInRegion(
