@@ -16,6 +16,11 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.TextView
 import com.example.adbflow.engine.CommandEngine
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +41,8 @@ class AutomationAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scriptJob: Job? = null
     private var countdownOverlayView: TextView? = null
+    private var latinTextRecognizer: TextRecognizer? = null
+    private var chineseTextRecognizer: TextRecognizer? = null
 
     companion object {
         @Volatile
@@ -61,8 +68,8 @@ class AutomationAccessibilityService : AccessibilityService() {
                 return
             }
 
-            if (containsCheckColor(script) && !service.hasRootAccess()) {
-                appendLog("!! CHECK_COLOR requires root. Script rejected.")
+            if (containsRootRequiredCommands(script) && !service.hasRootAccess()) {
+                appendLog("!! CHECK_COLOR/CHECK_OCR requires root. Script rejected.")
                 return
             }
             service.runScriptInternal(script, countdownSeconds.coerceAtLeast(0))
@@ -74,12 +81,13 @@ class AutomationAccessibilityService : AccessibilityService() {
             appendLog("> Script stopped")
         }
 
-        private fun containsCheckColor(script: String): Boolean {
+        private fun containsRootRequiredCommands(script: String): Boolean {
             return script.lineSequence().any { line ->
                 val trimmed = line.trim()
+                val upper = trimmed.uppercase(Locale.US)
                 trimmed.isNotEmpty() &&
                     !trimmed.startsWith("#") &&
-                    trimmed.uppercase(Locale.US).startsWith("CHECK_COLOR")
+                    (upper.startsWith("CHECK_COLOR") || upper.startsWith("CHECK_OCR"))
             }
         }
     }
@@ -113,6 +121,10 @@ class AutomationAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        latinTextRecognizer?.close()
+        latinTextRecognizer = null
+        chineseTextRecognizer?.close()
+        chineseTextRecognizer = null
         super.onDestroy()
     }
 
@@ -367,6 +379,86 @@ class AutomationAccessibilityService : AccessibilityService() {
             android.graphics.Color.green(pixel),
             android.graphics.Color.blue(pixel),
         )
+    }
+
+    suspend fun readTextInRegion(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        language: String?,
+        log: (String) -> Unit,
+    ): String? {
+        if (!hasRootAccess()) {
+            log("!! CHECK_OCR requires root")
+            return null
+        }
+
+        val bitmap = captureScreenshotViaRoot(log) ?: return null
+        val left = kotlin.math.min(x1, x2)
+        val rightInclusive = kotlin.math.max(x1, x2)
+        val top = kotlin.math.min(y1, y2)
+        val bottomInclusive = kotlin.math.max(y1, y2)
+
+        if (left < 0 || top < 0 || rightInclusive >= bitmap.width || bottomInclusive >= bitmap.height) {
+            log("!! OCR region ($left,$top)-($rightInclusive,$bottomInclusive) is outside screenshot bounds ${bitmap.width}x${bitmap.height}")
+            return null
+        }
+
+        val regionWidth = rightInclusive - left + 1
+        val regionHeight = bottomInclusive - top + 1
+        val regionBitmap = Bitmap.createBitmap(bitmap, left, top, regionWidth, regionHeight)
+        return try {
+            recognizeText(regionBitmap, language, log)
+        } finally {
+            regionBitmap.recycle()
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    private suspend fun recognizeText(bitmap: Bitmap, language: String?, log: (String) -> Unit): String? {
+        val recognizer = getTextRecognizer(language, log)
+        val inputImage = InputImage.fromBitmap(bitmap, 0)
+        return suspendCancellableCoroutine { continuation ->
+            recognizer.process(inputImage)
+                .addOnSuccessListener { result ->
+                    if (continuation.isActive) {
+                        continuation.resume(result.text.replace('\n', ' ').trim())
+                    }
+                }
+                .addOnFailureListener { error ->
+                    if (continuation.isActive) {
+                        log("!! OCR failed: ${error.message}")
+                        continuation.resume(null)
+                    }
+                }
+        }
+    }
+
+    private fun getTextRecognizer(language: String?, log: (String) -> Unit): TextRecognizer {
+        val lang = language?.trim()?.lowercase(Locale.US).orEmpty()
+        return when {
+            lang.isEmpty() || lang == "en" || lang == "latin" || lang.startsWith("en-") -> {
+                latinTextRecognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).also {
+                    latinTextRecognizer = it
+                }
+            }
+
+            lang == "zh" || lang.startsWith("zh-") || lang == "chinese" -> {
+                chineseTextRecognizer ?: TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()).also {
+                    chineseTextRecognizer = it
+                }
+            }
+
+            else -> {
+                log("!! OCR language '$language' is not supported yet. Falling back to Latin recognizer.")
+                latinTextRecognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).also {
+                    latinTextRecognizer = it
+                }
+            }
+        }
     }
 
     private fun captureScreenshotViaRoot(log: (String) -> Unit): Bitmap? {

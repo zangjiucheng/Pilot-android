@@ -173,6 +173,7 @@ class CommandEngine(
             return null
         }
         if (normalized.startsWith("CHECK_COLOR")) return checkColor(cmd)
+        if (normalized.startsWith("CHECK_OCR")) return checkOcr(cmd)
 
         service.executeAction(cmd, log)
         return null
@@ -257,6 +258,61 @@ class CommandEngine(
             branchTargetToDirective(onMatch)
         } else {
             log("!! Pixel mismatch. Actual=$actual, Expected=$expectedColor ±$tolerance")
+            branchTargetToDirective(onMismatch)
+        }
+    }
+
+    private suspend fun checkOcr(command: String): JumpDirective? {
+        val tokens = tokenize(command)
+        if (tokens.size < 6) {
+            log("!! CHECK_OCR usage: CHECK_OCR <x1> <y1> <x2> <y2> <text> [LANG <language>] [THEN [CALL|GOTO] <label>] [ELSE [CALL|GOTO] <label>]")
+            return null
+        }
+
+        val x1 = tokens[1].toIntOrNull()
+        val y1 = tokens[2].toIntOrNull()
+        val x2 = tokens[3].toIntOrNull()
+        val y2 = tokens[4].toIntOrNull()
+        if (x1 == null || y1 == null || x2 == null || y2 == null) {
+            log("!! Invalid CHECK_OCR coordinates")
+            return null
+        }
+
+        val expectedText = tokens[5]
+        if (expectedText.isBlank()) {
+            log("!! CHECK_OCR text must not be empty")
+            return null
+        }
+
+        val remainder = tokens.drop(6).toMutableList()
+        var language: String? = null
+        if (remainder.isNotEmpty() && remainder[0].equals("LANG", ignoreCase = true)) {
+            if (remainder.size < 2) {
+                log("!! CHECK_OCR LANG must be followed by language code, e.g. LANG en or LANG zh")
+                return null
+            }
+            language = remainder[1]
+            remainder.removeAt(0)
+            remainder.removeAt(0)
+        }
+
+        val (onMatch, onMismatch) = try {
+            parseBranchTokens(remainder)
+        } catch (e: IllegalArgumentException) {
+            log("!! Invalid CHECK_OCR branching syntax: ${e.message}")
+            return null
+        }
+
+        log("> OCR region ($x1,$y1)-($x2,$y2), looking for '$expectedText'${if (language != null) " LANG=$language" else ""}")
+        val recognizedText = service.readTextInRegion(x1, y1, x2, y2, language, log)
+            ?: return branchTargetToDirective(onMismatch)
+
+        val matches = recognizedText.contains(expectedText, ignoreCase = true)
+        return if (matches) {
+            log("✓ OCR matched '$expectedText'")
+            branchTargetToDirective(onMatch)
+        } else {
+            log("!! OCR mismatch. Expected '$expectedText', got '$recognizedText'")
             branchTargetToDirective(onMismatch)
         }
     }

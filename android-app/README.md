@@ -3,16 +3,15 @@
 This folder contains an on-device Android automation app (no computer/ADB required at runtime).
 
 ## What it does
-- Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `EXIT`.
+- Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `CHECK_OCR`, `EXIT`.
 - Native action commands:
   - `TAP x y`
   - `SWIPE x1 y1 x2 y2 [durationMs]`
   - `BACK`, `HOME`, `LOCK`
 - Legacy `adb shell input ...` lines are auto-converted for compatibility.
-- `CHECK_COLOR` is supported only on rooted devices.
+- `CHECK_COLOR` and `CHECK_OCR` are supported only on rooted devices.
 - Bundled example scripts are stored in app assets: `app/src/main/assets/default-scripts/`.
-- On first launch, bundled examples are seeded into app internal storage (`files/scripts`) so they can be managed in-app.
-- File page operations are app-storage based (`Load Script` / `Save Script`), using files under `files/scripts`.
+- File page operations use the Storage app picker (`Load Script` / `Save Script`).
 
 ## Runtime model
 - Runs fully **on-device** after install.
