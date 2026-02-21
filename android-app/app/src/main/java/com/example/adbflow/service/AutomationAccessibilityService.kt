@@ -380,11 +380,6 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     suspend fun readPixelColor(x: Int, y: Int, log: (String) -> Unit): Triple<Int, Int, Int>? {
-        if (!hasRootAccess()) {
-            log("!! CHECK_COLOR requires root")
-            return null
-        }
-
         val bitmap = captureScreenshotViaRoot(log) ?: return null
         if (x < 0 || y < 0 || x >= bitmap.width || y >= bitmap.height) {
             log("!! coordinates ($x, $y) are outside screenshot bounds ${bitmap.width}x${bitmap.height}")
@@ -409,11 +404,6 @@ class AutomationAccessibilityService : AccessibilityService() {
         minRun: Int = 1,
         log: (String) -> Unit,
     ): Int? {
-        if (!hasRootAccess()) {
-            log("!! CHECK_COLOR_LINE requires root")
-            return null
-        }
-
         val bitmap = captureScreenshotViaRoot(log) ?: return null
         try {
             if (x < 0 || x >= bitmap.width) {
@@ -471,11 +461,6 @@ class AutomationAccessibilityService : AccessibilityService() {
         minRun: Int = 1,
         log: (String) -> Unit,
     ): Int? {
-        if (!hasRootAccess()) {
-            log("!! CHECK_COLOR_LINE requires root")
-            return null
-        }
-
         val bitmap = captureScreenshotViaRoot(log) ?: return null
         try {
             if (y < 0 || y >= bitmap.height) {
@@ -531,11 +516,6 @@ class AutomationAccessibilityService : AccessibilityService() {
         language: String?,
         log: (String) -> Unit,
     ): String? {
-        if (!hasRootAccess()) {
-            log("!! CHECK_OCR requires root")
-            return null
-        }
-
         val bitmap = captureScreenshotViaRoot(log) ?: return null
         val left = kotlin.math.min(x1, x2)
         val rightInclusive = kotlin.math.max(x1, x2)
