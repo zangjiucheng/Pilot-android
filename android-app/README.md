@@ -5,10 +5,11 @@ This folder contains an on-device Android automation app (no computer/ADB requir
 ## What it does
 - Parses and executes your command DSL: `LABEL`, `GOTO`, `CALL`, `RETURN`, `JUMP`, `SLEEP`, `CHECK_COLOR`, `CHECK_COLOR_LINE`, `CHECK_OCR`, `EXIT`.
   - `CHECK_COLOR_LINE` supports:
-    - `CHECK_COLOR_LINE <x> <y1> <y2> <color> ...` (fixed x, scan y)
-    - `CHECK_COLOR_LINE Y <y> <x1> <x2> <color> ...` (fixed y, scan x)
+    - `CHECK_COLOR_LINE <x> <y1> <y2> <color> [tolerance] [step] ...` (fixed x, scan y)
+    - `CHECK_COLOR_LINE Y <y> <x1> <x2> <color> [tolerance] [step] ...` (fixed y, scan x)
     - On hit, sets script variables `${LAST_X}` and `${LAST_Y}` for later commands.
     - Variables support numeric offsets, e.g. `${LAST_Y-120}`, `${LAST_Y+180}`.
+    - Variables also support defaults, e.g. `${LAST_Y:-2000}`.
 - Native action commands:
   - `TAP x y`
   - `SWIPE x1 y1 x2 y2 [durationMs]`

@@ -405,6 +405,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         y2: Int,
         expected: Triple<Int, Int, Int>,
         tolerance: Int,
+        step: Int = 1,
         log: (String) -> Unit,
     ): Int? {
         if (!hasRootAccess()) {
@@ -423,7 +424,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                 return null
             }
 
-            val step = if (y2 >= y1) 1 else -1
+            val delta = step.coerceAtLeast(1) * if (y2 >= y1) 1 else -1
             var y = y1
             while (true) {
                 val pixel = bitmap.getPixel(x, y)
@@ -438,7 +439,8 @@ class AutomationAccessibilityService : AccessibilityService() {
                 if (matches) return y
 
                 if (y == y2) break
-                y += step
+                val next = y + delta
+                y = if (delta > 0) kotlin.math.min(next, y2) else kotlin.math.max(next, y2)
             }
             return null
         } finally {
@@ -454,6 +456,7 @@ class AutomationAccessibilityService : AccessibilityService() {
         x2: Int,
         expected: Triple<Int, Int, Int>,
         tolerance: Int,
+        step: Int = 1,
         log: (String) -> Unit,
     ): Int? {
         if (!hasRootAccess()) {
@@ -472,7 +475,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                 return null
             }
 
-            val step = if (x2 >= x1) 1 else -1
+            val delta = step.coerceAtLeast(1) * if (x2 >= x1) 1 else -1
             var x = x1
             while (true) {
                 val pixel = bitmap.getPixel(x, y)
@@ -487,7 +490,8 @@ class AutomationAccessibilityService : AccessibilityService() {
                 if (matches) return x
 
                 if (x == x2) break
-                x += step
+                val next = x + delta
+                x = if (delta > 0) kotlin.math.min(next, x2) else kotlin.math.max(next, x2)
             }
             return null
         } finally {

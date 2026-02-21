@@ -33,7 +33,8 @@ class CommandEngine(
     private val service: AutomationAccessibilityService,
     private val log: (String) -> Unit,
 ) {
-    private val variablePattern = Regex("\\$\\{([A-Za-z_][A-Za-z0-9_]*)([+\\-][0-9]+)?\\}")
+    private val variablePattern = Regex("\\$\\{([^}]+)\\}")
+    private val variableNamePattern = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
     private val scriptVariables = mutableMapOf<String, String>()
 
     suspend fun runScript(script: String) {
@@ -251,7 +252,9 @@ class CommandEngine(
         }
 
         log("> Checking pixel ($x, $y) against $expectedColor ±$tolerance")
-        val actual = service.readPixelColor(x, y, log)
+        val actual = runWithRetries("CHECK_COLOR") {
+            service.readPixelColor(x, y, log)
+        }
             ?: return branchTargetToDirective(onMismatch)
 
         val matches = listOf(actual.first, actual.second, actual.third)
@@ -270,7 +273,7 @@ class CommandEngine(
     private suspend fun checkColorLine(command: String): JumpDirective? {
         val tokens = tokenize(command)
         if (tokens.size < 5) {
-            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [THEN ...] [ELSE ...]")
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [THEN ...] [ELSE ...]")
             return null
         }
 
@@ -283,7 +286,7 @@ class CommandEngine(
         }
 
         if (tokens.size < offset + 4) {
-            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [THEN ...] [ELSE ...]")
+            log("!! CHECK_COLOR_LINE usage: CHECK_COLOR_LINE [X|Y] <fixed> <start> <end> <#RRGGBB|R,G,B> [tolerance] [step] [THEN ...] [ELSE ...]")
             return null
         }
 
@@ -320,6 +323,18 @@ class CommandEngine(
                 remainder.removeAt(0)
             }
         }
+        var step = 1
+        if (remainder.isNotEmpty()) {
+            val maybeStep = remainder.first().toIntOrNull()
+            if (maybeStep != null) {
+                if (maybeStep <= 0) {
+                    log("!! step must be > 0")
+                    return null
+                }
+                step = maybeStep
+                remainder.removeAt(0)
+            }
+        }
 
         val (onMatch, onMismatch) = try {
             parseBranchTokens(remainder)
@@ -329,8 +344,10 @@ class CommandEngine(
         }
 
         val (hit, hitAxisName) = if (axis == "Y") {
-            log("> Scanning y=$fixed from x=$start to x=$end for color $expected ±$tolerance")
-            val hitX = service.findColorXOnHorizontalLine(fixed, start, end, expected, tolerance, log)
+            log("> Scanning y=$fixed from x=$start to x=$end for color $expected ±$tolerance step=$step")
+            val hitX = runWithRetries("CHECK_COLOR_LINE") {
+                service.findColorXOnHorizontalLine(fixed, start, end, expected, tolerance, step, log)
+            }
                 ?: run {
                     clearLineHitVariables()
                     return branchTargetToDirective(onMismatch)
@@ -339,8 +356,10 @@ class CommandEngine(
             setScriptVariable("LAST_Y", fixed)
             Pair(hitX, "x")
         } else {
-            log("> Scanning x=$fixed from y=$start to y=$end for color $expected ±$tolerance")
-            val hitY = service.findColorYOnVerticalLine(fixed, start, end, expected, tolerance, log)
+            log("> Scanning x=$fixed from y=$start to y=$end for color $expected ±$tolerance step=$step")
+            val hitY = runWithRetries("CHECK_COLOR_LINE") {
+                service.findColorYOnVerticalLine(fixed, start, end, expected, tolerance, step, log)
+            }
                 ?: run {
                     clearLineHitVariables()
                     return branchTargetToDirective(onMismatch)
@@ -396,7 +415,9 @@ class CommandEngine(
         }
 
         log("> OCR region ($x1,$y1)-($x2,$y2), looking for '$expectedText'${if (language != null) " LANG=$language" else ""}")
-        val recognizedText = service.readTextInRegion(x1, y1, x2, y2, language, log)
+        val recognizedText = runWithRetries("CHECK_OCR") {
+            service.readTextInRegion(x1, y1, x2, y2, language, log)
+        }
             ?: return branchTargetToDirective(onMismatch)
 
         val matches = matchesExpectedText(recognizedText, expectedText, log)
@@ -514,26 +535,13 @@ class CommandEngine(
 
         var hasError = false
         val resolved = variablePattern.replace(command) { match ->
-            val name = match.groupValues[1]
-            val baseText = scriptVariables[name]
-            if (baseText == null) {
+            val expression = match.groupValues[1].trim()
+            val replacement = resolveVariableExpression(expression)
+            if (replacement == null) {
                 hasError = true
                 match.value
             } else {
-                val offsetText = match.groupValues.getOrNull(2).orEmpty()
-                if (offsetText.isEmpty()) {
-                    baseText
-                } else {
-                    val base = baseText.toIntOrNull()
-                    val offset = offsetText.toIntOrNull()
-                    if (base == null || offset == null) {
-                        log("!! Variable '$name' is not numeric, cannot apply offset in ${match.value}")
-                        hasError = true
-                        match.value
-                    } else {
-                        (base + offset).toString()
-                    }
-                }
+                replacement
             }
         }
         if (hasError) {
@@ -541,6 +549,71 @@ class CommandEngine(
             return null
         }
         return resolved
+    }
+
+    private fun resolveVariableExpression(expression: String): String? {
+        val defaultSeparator = expression.indexOf(":-")
+        val coreExpr: String
+        var defaultValue: String? = null
+        if (defaultSeparator >= 0) {
+            coreExpr = expression.substring(0, defaultSeparator).trim()
+            defaultValue = expression.substring(defaultSeparator + 2).trim()
+            if (defaultValue.isNullOrEmpty()) defaultValue = null
+        } else {
+            coreExpr = expression
+        }
+
+        val (name, offset) = parseVariableCore(coreExpr) ?: run {
+            log("!! Invalid variable expression: $expression")
+            return null
+        }
+        val baseText = scriptVariables[name]
+        if (baseText == null) {
+            return defaultValue
+        }
+        if (offset == null) return baseText
+
+        val base = baseText.toIntOrNull()
+        if (base == null) {
+            log("!! Variable '$name' is not numeric, cannot apply offset")
+            return null
+        }
+        return (base + offset).toString()
+    }
+
+    private fun parseVariableCore(coreExpr: String): Pair<String, Int?>? {
+        val plusIndex = coreExpr.indexOf('+')
+        val minusIndex = coreExpr.indexOf('-', startIndex = 1)
+        val opIndex = when {
+            plusIndex >= 0 && minusIndex >= 0 -> kotlin.math.min(plusIndex, minusIndex)
+            plusIndex >= 0 -> plusIndex
+            minusIndex >= 0 -> minusIndex
+            else -> -1
+        }
+        if (opIndex < 0) {
+            if (!variableNamePattern.matches(coreExpr)) return null
+            return Pair(coreExpr, null)
+        }
+
+        val name = coreExpr.substring(0, opIndex).trim()
+        val offsetText = coreExpr.substring(opIndex).trim()
+        if (!variableNamePattern.matches(name)) return null
+        val offset = offsetText.toIntOrNull() ?: return null
+        return Pair(name, offset)
+    }
+
+    private suspend fun <T> runWithRetries(label: String, attempts: Int = 2, block: suspend () -> T?): T? {
+        var tryIndex = 0
+        while (tryIndex < attempts) {
+            val result = block()
+            if (result != null) return result
+            tryIndex++
+            if (tryIndex < attempts) {
+                log(".. $label retry $tryIndex/$attempts")
+                delay(120)
+            }
+        }
+        return null
     }
 
     private fun setScriptVariable(name: String, value: Int) {
