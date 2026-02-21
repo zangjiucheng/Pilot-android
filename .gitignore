@@ -1,8 +1,8 @@
 *.json
 *.log
-*.txt
 *.pkl
 *.mitm
+commands/
 tmp/
 
 # Created by https://www.toptal.com/developers/gitignore/api/kotlin,python,linux,macos

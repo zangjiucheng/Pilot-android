@@ -88,16 +88,9 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
-            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
                 stopScript()
                 return false
-            }
-            if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-                appendLog("!! Hard stop requested (Volume Down). Killing app process.")
-                stopScript()
-                stopSelf()
-                android.os.Process.killProcess(android.os.Process.myPid())
-                return true
             }
         }
         return super.onKeyEvent(event)
