@@ -1,5 +1,10 @@
 # Pilot-android
 
+## Project Description
+Pilot-android is a script-driven Android automation toolkit. It lets you automate taps, swipes, navigation, and conditional flows (such as color/OCR checks) either directly on-device or from a desktop environment. The project is split into:
+- a native Android runtime for standalone phone-side execution, and
+- a Python + ADB runtime for computer-controlled automation.
+
 This repository contains two automation implementations:
 
 ## `android-app/`
@@ -20,4 +25,3 @@ This repository contains two automation implementations:
 ## Quick Start
 1. If you want fully on-device execution, use `android-app/`.
 2. If you want computer-driven ADB automation, use `pyversion/`.
-
