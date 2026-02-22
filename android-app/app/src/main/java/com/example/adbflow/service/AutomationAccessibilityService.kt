@@ -3,6 +3,7 @@ package com.example.adbflow.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -1101,8 +1102,19 @@ class AutomationAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun sendHomeAndSleep(log: (String) -> Unit) {
-        performGlobalAction(GLOBAL_ACTION_HOME)
-        log("> Sent HOME")
+    fun returnToFlowPilotApp(log: (String) -> Unit) {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        if (launchIntent == null) {
+            log("!! Failed to return to FlowPilot: launch intent unavailable")
+            return
+        }
+        try {
+            startActivity(launchIntent)
+            log("> Returned to FlowPilot")
+        } catch (e: Exception) {
+            log("!! Failed to return to FlowPilot: ${e.message}")
+        }
     }
 }

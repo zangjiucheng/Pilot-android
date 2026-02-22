@@ -1,6 +1,7 @@
 package com.example.adbflow.engine
 
 import com.example.adbflow.service.AutomationAccessibilityService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -87,8 +88,10 @@ class CommandEngine(
 
                 lineIndex = target
             }
+        } catch (e: CancellationException) {
+            throw e
         } finally {
-            service.sendHomeAndSleep(log)
+            service.returnToFlowPilotApp(log)
         }
     }
 
