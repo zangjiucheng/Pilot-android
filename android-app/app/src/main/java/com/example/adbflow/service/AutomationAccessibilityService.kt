@@ -701,6 +701,32 @@ class AutomationAccessibilityService : AccessibilityService() {
                 log("> SWIPEPATH ${points.size} points duration=$durationMs (continuous hold)")
             }
 
+            "ZOOM_IN", "PINCH_OUT" -> {
+                val centerX = normalizedTokens.getOrNull(1)?.toFloatOrNull()
+                val centerY = normalizedTokens.getOrNull(2)?.toFloatOrNull()
+                val distance = normalizedTokens.getOrNull(3)?.toFloatOrNull()
+                val duration = normalizedTokens.getOrNull(4)?.toLongOrNull() ?: 280L
+                if (centerX == null || centerY == null || distance == null || distance <= 0f) {
+                    log("!! ZOOM_IN usage: ZOOM_IN <centerX> <centerY> <distancePx> [durationMs]")
+                    return
+                }
+                performTwoFingerZoom(centerX, centerY, distance, zoomIn = true, durationMs = duration)
+                log("> ZOOM_IN center=($centerX,$centerY) distance=$distance duration=$duration")
+            }
+
+            "ZOOM_OUT", "PINCH_IN" -> {
+                val centerX = normalizedTokens.getOrNull(1)?.toFloatOrNull()
+                val centerY = normalizedTokens.getOrNull(2)?.toFloatOrNull()
+                val distance = normalizedTokens.getOrNull(3)?.toFloatOrNull()
+                val duration = normalizedTokens.getOrNull(4)?.toLongOrNull() ?: 280L
+                if (centerX == null || centerY == null || distance == null || distance <= 0f) {
+                    log("!! ZOOM_OUT usage: ZOOM_OUT <centerX> <centerY> <distancePx> [durationMs]")
+                    return
+                }
+                performTwoFingerZoom(centerX, centerY, distance, zoomIn = false, durationMs = duration)
+                log("> ZOOM_OUT center=($centerX,$centerY) distance=$distance duration=$duration")
+            }
+
             "BACK" -> performGlobalAction(GLOBAL_ACTION_BACK)
             "HOME" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "LOCK", "SLEEP_DEVICE" -> {
@@ -710,7 +736,7 @@ class AutomationAccessibilityService : AccessibilityService() {
             }
 
             else -> {
-                log("!! Unsupported command: $command. Use TAP/SWIPE/SWIPEPATH/BACK/HOME/LOCK")
+                log("!! Unsupported command: $command. Use TAP/SWIPE/SWIPEPATH/ZOOM_IN/ZOOM_OUT/BACK/HOME/LOCK")
                 throw IllegalArgumentException("Unsupported command: $command")
             }
         }
@@ -863,6 +889,67 @@ class AutomationAccessibilityService : AccessibilityService() {
 
             if (!dispatched && continuation.isActive) {
                 continuation.resumeWithException(IllegalStateException("Failed to dispatch gesture"))
+            }
+        }
+    }
+
+    private suspend fun performTwoFingerZoom(
+        centerX: Float,
+        centerY: Float,
+        distancePx: Float,
+        zoomIn: Boolean,
+        durationMs: Long,
+    ) {
+        suspendCancellableCoroutine { continuation ->
+            val maxX = (resources.displayMetrics.widthPixels - 1).coerceAtLeast(0).toFloat()
+            val maxY = (resources.displayMetrics.heightPixels - 1).coerceAtLeast(0).toFloat()
+            val clampedCenterX = centerX.coerceIn(0f, maxX)
+            val clampedCenterY = centerY.coerceIn(0f, maxY)
+            val maxDistance = kotlin.math.min(
+                clampedCenterX.coerceAtMost(maxX - clampedCenterX),
+                clampedCenterY.coerceAtMost(maxY - clampedCenterY),
+            ).coerceAtLeast(30f)
+            val finalDistance = distancePx.coerceAtLeast(30f).coerceAtMost(maxDistance)
+            val near = (finalDistance * 0.32f).coerceAtLeast(14f)
+            val far = finalDistance
+
+            val finger1Path = Path()
+            val finger2Path = Path()
+            if (zoomIn) {
+                finger1Path.moveTo(clampedCenterX - near, clampedCenterY)
+                finger1Path.lineTo(clampedCenterX - far, clampedCenterY)
+                finger2Path.moveTo(clampedCenterX + near, clampedCenterY)
+                finger2Path.lineTo(clampedCenterX + far, clampedCenterY)
+            } else {
+                finger1Path.moveTo(clampedCenterX - far, clampedCenterY)
+                finger1Path.lineTo(clampedCenterX - near, clampedCenterY)
+                finger2Path.moveTo(clampedCenterX + far, clampedCenterY)
+                finger2Path.lineTo(clampedCenterX + near, clampedCenterY)
+            }
+
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(finger1Path, 0, durationMs.coerceAtLeast(1L)))
+                .addStroke(GestureDescription.StrokeDescription(finger2Path, 0, durationMs.coerceAtLeast(1L)))
+                .build()
+
+            val dispatched = dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(Unit)
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) {
+                            continuation.resumeWithException(IllegalStateException("Two-finger zoom gesture cancelled"))
+                        }
+                    }
+                },
+                null,
+            )
+
+            if (!dispatched && continuation.isActive) {
+                continuation.resumeWithException(IllegalStateException("Failed to dispatch two-finger zoom gesture"))
             }
         }
     }

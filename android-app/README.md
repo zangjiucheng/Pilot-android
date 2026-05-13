@@ -19,6 +19,8 @@ This folder contains an on-device Android automation app (no computer/ADB requir
   - `TAP x y`
   - `SWIPE x1 y1 x2 y2 [durationMs]`
   - `SWIPEPATH x1 y1 x2 y2 [x3 y3 ...] [durationMs]` (single continuous hold gesture, auto-duration by path length when omitted)
+  - `ZOOM_IN centerX centerY distancePx [durationMs]` (two-finger spread)
+  - `ZOOM_OUT centerX centerY distancePx [durationMs]` (two-finger pinch)
   - `BACK`, `HOME`, `LOCK`
 - Built-in operation recorder:
   - Open **Record** page and tap **Start Record**.
